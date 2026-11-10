@@ -1,0 +1,38 @@
+[package]
+name = "obfstr2"
+version = "0.3.0"
+edition = "2024"
+resolver = "2"
+rust-version = "1.92"
+authors = ["AlbusPhos <owo.zzz@proton.me>"]
+description = "Polymorphic compile-time string/bytes/int/float/cstr/file obfuscation"
+license = "MPL-2.0"
+readme = "README.md"
+documentation = "https://docs.rs/obfstr2"
+repository = "https://github.com/AlbusPhos/obfstr2"
+homepage = "https://github.com/AlbusPhos"
+keywords = ["obfuscation", "string", "no-std", "compile-time", "polymorphic"]
+categories = ["no-std", "embedded"]
+
+
+[dependencies]
+obfstr2-macros = { version = "=0.3.0", path = "obfstr2-macros" }
+lib-unknown = { version = "=0.3.2", default-features = false, features = ["crypto", "types", "encoding"] }
+
+[features]
+default = [
+    "lib-unknown/alloc",
+    "obfstr2-macros/alloc",
+]
+
+[dev-dependencies]
+lib-unknown = { version = "=0.3.2", features = ["dyntest"] }
+
+
+[profile.release]
+strip = "symbols"
+debug = 0
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

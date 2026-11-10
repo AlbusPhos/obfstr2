@@ -1,0 +1,162 @@
+// SPDX-License-Identifier: MPL-2.0
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+//! 非法输入测试：越界元素 / 缺失文件 / 非字面量 / 未闭合括号均报编译错误。
+//!
+//! 由原 `obfstr2-macros/src/lib.rs::tests` 迁移而来。每个用例独立
+//! `dny_run`（目录唯一），无共享 `RUNNER`、无 `clear_dny_project`。
+//! 未引入 `trybuild`：其快照 rudiment 在离线环境不可用，且此处仅需断言
+//! `stderr` 关键信息，`dny_run` 足够。
+use lib_unknown::dyntest::dny_run;
+
+fn obfstr2_dep() -> String {
+    format!("obfstr2 = {{ path = {:?} }}", env!("CARGO_MANIFEST_DIR"))
+}
+
+fn assert_compile_fail(code: &str, needle: &str, tag: &str) {
+    let ret = dny_run(code, &obfstr2_dep(), None, false);
+    assert!(!ret.ok, "[{tag}] 非法输入应当编译失败");
+    assert!(
+        ret.stderr.contains(needle),
+        "[{tag}] 错误信息应包含 {needle:?}，实际 stderr:\n{}",
+        ret.stderr
+    );
+}
+
+#[test]
+fn bytes_array_out_of_range_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _b = obfstr2::b2!([0x61, 300]); }"#,
+        "0..=255",
+        "b2-range",
+    );
+}
+
+#[test]
+fn bytes_array_non_literal_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let x = 1u8; let _b = obfstr2::b2!([x]); }"#,
+        "整数字面量",
+        "b2-lit",
+    );
+}
+
+#[test]
+fn missing_file_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _b = obfstr2::f2!("不存在的文件.bin"); }"#,
+        "无法读取文件",
+        "f2-missing",
+    );
+}
+
+#[test]
+fn int_out_of_range_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _x = obfstr2::i2!(256u8); }"#,
+        "超出 u8 范围",
+        "i2-range",
+    );
+}
+
+#[test]
+fn int_negative_for_unsigned_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _x = obfstr2::i2!(-1u8); }"#,
+        "负数不能用于无符号",
+        "i2-neg-unsigned",
+    );
+}
+
+#[test]
+fn int_non_literal_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _x = obfstr2::i2!(u64::MAX); }"#,
+        "只接受整数字面量",
+        "i2-lit",
+    );
+}
+
+#[test]
+fn int_bad_suffix_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _x = obfstr2::i2!(1u256); }"#,
+        "后缀",
+        "i2-suffix",
+    );
+}
+
+#[test]
+fn float_overflow_to_inf_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _x = obfstr2::fl2!(1e999f32); }"#,
+        "无穷",
+        "fl2-inf",
+    );
+}
+
+#[test]
+fn float_non_literal_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _x = obfstr2::fl2!(f64::MAX); }"#,
+        "只接受浮点字面量",
+        "fl2-lit",
+    );
+}
+
+#[test]
+fn float_bad_suffix_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _x = obfstr2::fl2!(1.0f16); }"#,
+        "后缀",
+        "fl2-suffix",
+    );
+}
+
+#[test]
+fn cstr_interior_nul_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _s = obfstr2::cs2!("a\0b"); }"#,
+        "内部 NUL",
+        "cs2-nul",
+    );
+}
+
+#[test]
+fn cstr_byte_str_nul_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _s = obfstr2::cs2!(b"hi\0"); }"#,
+        "内部 NUL",
+        "cs2-bytenul",
+    );
+}
+
+#[test]
+fn cstr_non_literal_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let e = "x"; let _s = obfstr2::cs2!(e); }"#,
+        "只接受字符串",
+        "cs2-lit",
+    );
+}
+
+#[test]
+fn s_fmt_non_literal_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let f = "x"; print!("{}", obfstr2::s_fmt1!(f)) }"#,
+        "必须是字符串字面量",
+        "s_fmt-lit",
+    );
+}
+
+#[test]
+fn s_fmt_unclosed_brace_rejected() {
+    assert_compile_fail(
+        r#"fn main() { print!("{}", obfstr2::s_fmt1!("a{b")) }"#,
+        "未闭合",
+        "s_fmt-brace",
+    );
+}

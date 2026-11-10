@@ -1,0 +1,31 @@
+[package]
+name = "obfstr2-macros"
+version = "0.3.0"
+edition = "2024"
+resolver = "2"
+rust-version = "1.92"
+authors = ["AlbusPhos <owo.zzz@proton.me>"]
+description = "Proc-macros for obfstr2 compile-time obfuscation. Use `obfstr2` directly."
+license = "MPL-2.0"
+readme = "README.md"
+documentation = "https://docs.rs/obfstr2-macros"
+repository = "https://github.com/AlbusPhos/obfstr2"
+homepage = "https://github.com/AlbusPhos"
+keywords = ["obfuscation", "proc-macro", "string", "no-std", "compile-time"]
+categories = ["no-std", "development-tools"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "3", features = ["full", "derive", "visit-mut"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+lib-unknown = { version = "=0.3.2", default-features = false, features = ["rand", "crypto", "alloc", "encoding-base64"] }
+
+[dev-dependencies]
+lib-unknown = { version = "=0.3.2", default-features = false, features = ["rand", "crypto", "dyntest", "encoding-base64"]}
+
+[features]
+default = []
+alloc = []
