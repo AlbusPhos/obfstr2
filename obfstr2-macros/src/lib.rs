@@ -207,7 +207,6 @@ pub fn f3(input: TokenStream) -> TokenStream {
     expand_file(input, types::b3)
 }
 
-
 /// 格式化字符串混淆宏本体（低延迟档）：输入与展开规则同 `s_fmt`，字面量片段走 `s1` 档混淆。
 ///
 /// # Warning
