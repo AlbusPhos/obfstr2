@@ -2,16 +2,12 @@
 
 > **Polymorphic compile-time string/bytes/int/float/cstr/file obfuscation**
 
-[![Type](https://img.shields.io/badge/Project%20Type-Library-green.svg)](#quick-start)
-[![License](https://img.shields.io/badge/license-MPL_2.0-brightgreen.svg)](https://mozilla.org/MPL/2.0/)
-
-[![Crates.io](https://img.shields.io/crates/v/obfstr2.svg)](https://crates.io/crates/obfstr2)
-[![Documentation](https://docs.rs/obfstr2/badge.svg)](https://docs.rs/obfstr2)
-[![Downloads](https://img.shields.io/crates/d/obfstr2.svg)](https://crates.io/crates/obfstr2)
-[![Release](https://img.shields.io/github/v/release/AlbusPhos/obfstr2)](https://github.com/AlbusPhos/obfstr2/releases)
-
-[![CI](https://github.com/AlbusPhos/obfstr2/actions/workflows/ci.yml/badge.svg)](https://github.com/AlbusPhos/obfstr2/actions)
-[![MSRV](https://img.shields.io/badge/MSRV-1.92-blue.svg)](Cargo.toml)
+[![Crates.io](https://img.shields.io/crates/v/obfstr2?logo=rust)](https://crates.io/crates/obfstr2)
+[![Docs.rs](https://img.shields.io/docsrs/obfstr2?logo=docs.rs)](https://docs.rs/obfstr2)
+[![CI](https://img.shields.io/github/actions/workflow/status/AlbusPhos/obfstr2/ci.yml?logo=github&label=CI)](https://github.com/AlbusPhos/obfstr2/actions)
+[![MSRV](https://img.shields.io/crates/msrv/obfstr2?logo=rust&label=MSRV)](https://crates.io/crates/obfstr2)
+[![Downloads](https://img.shields.io/crates/d/obfstr2?color=blue)](https://crates.io/crates/obfstr2)
+[![License](https://img.shields.io/crates/l/obfstr2)](https://mozilla.org/MPL/2.0/)
 
 **Language:** English | [简体中文](README.md)
 
@@ -80,7 +76,7 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 1. **Extreme Polymorphism** — The exact same input produces completely different ciphertext forms on every build:
     - **Random Chunking**: Splits payloads at random increasing steps; chunk boundaries change on every compilation.
     - **Random Primitive Stacking**: Randomly selects and stacks multiple encryption/decryption layers according to the security level until the combined security threshold is met.
-    - **Random Storage Disguises**: Ciphertext may appear disguised in various forms such as byte strings, `u8` arrays, `u64` arrays, `u128` arrays, MAC addresses, UUIDs, or IPv6 addresses.
+    - **Random Storage Disguises**: Ciphertext may appear disguised in various forms such as byte strings, `u64` arrays, `u128` arrays, MAC addresses, UUIDs, IPv6 addresses, or PEM.
     - **Key Steganography**: Keys for each layer are likewise hidden using random storage forms and reconstructed only at runtime; no plaintext key constants appear in the expanded code.
     - **Chaff Injection**: Mixes in junk code and meaningless pseudo-state variables to further disrupt static analysis and data-flow tracking.
 
@@ -92,11 +88,11 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 
 ### Trade-offs
 
-| We Chose                       | Over                                   | Reason                                                                                                                               |
-|:-------------------------------|:---------------------------------------|:-------------------------------------------------------------------------------------------------------------------------------------|
-| Security Strength              | Minimal Binary Size                    | High-strength cascaded decryption and polymorphic expansion inevitably cause code bloat—a necessary cost to block reverse analysis   |
-| Non-Deterministic Builds       | Reproducible Builds                    | Ensuring polymorphism is the core defense against automated signature extraction                                                     |
-| Practical Engineering Defense  | Theoretical Cryptographic Indestructibility | The goal of this project is to drastically raise the cost of attack in reverse analysis, symbolic execution, and reverse engineering |
+| We Chose                      | Over                                        | Reason                                                                                                                               |
+|:------------------------------|:--------------------------------------------|:-------------------------------------------------------------------------------------------------------------------------------------|
+| Security Strength             | Minimal Binary Size                         | High-strength cascaded decryption and polymorphic expansion inevitably cause code bloat—a necessary cost to block reverse analysis   |
+| Non-Deterministic Builds      | Reproducible Builds                         | Ensuring polymorphism is the core defense against automated signature extraction                                                     |
+| Practical Engineering Defense | Theoretical Cryptographic Indestructibility | The goal of this project is to drastically raise the cost of attack in reverse analysis, symbolic execution, and reverse engineering |
 
 > While cryptographic security is not guaranteed, modern cryptographic design principles are actively incorporated.
 
@@ -107,15 +103,15 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 
 ## Macro Overview
 
-| Macro                             | Input                                                                                       | Security Level                                                                                                                                                              |
-|-----------------------------------|---------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `s1!` / `s2!` / `s3!`             | `"..."` string literal                                                                      | Low latency / Balanced / High strength                                                                                                                                      |
-| `b1!` / `b2!` / `b3!`             | `b"..."` or `[0x41, 66, ...]` (elements `0..=255`)                                          | Low latency / Balanced / High strength                                                                                                                                      |
-| `i1!` / `i2!` / `i3!`             | `42u8` / `-1` / `0xFFu16` etc. integer literals (unsuffixed defaults to `i32`)              | Low latency / Balanced / High strength                                                                                                                                      |
-| `fl1!` / `fl2!` / `fl3!`          | `3.15f32` / `-1.0` / `1e10` etc. float literals (unsuffixed defaults to `f64`)              | Low latency / Balanced / High strength                                                                                                                                      |
-| `cs1!` / `cs2!` / `cs3!`          | `"..."` / `c"..."` / `b"..."` (`b"..."` may contain non-UTF-8 bytes; internal NUL forbidden)| Low latency / Balanced / High strength                                                                                                                                      |
-| `f1!` / `f2!` / `f3!`             | `"path/to/file"` file path literal                                                          | Low latency / Balanced / High strength                                                                                                                                      |
-| `s_fmt1!` / `s_fmt2!` / `s_fmt3!` | `"...{}..."` format string + args                                                           | Obfuscates literal segments by level then passes to `format!`, returning `String` (requires `alloc`, `no_std` compatible; level `2`/`3` segments may use `Heap*`, requiring default features) |
+| Macro                             | Input                                                                                        | Security Level                                                                                                                                                                                |
+|-----------------------------------|----------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `s1!` / `s2!` / `s3!`             | `"..."` string literal                                                                       | Low latency / Balanced / High strength                                                                                                                                                        |
+| `b1!` / `b2!` / `b3!`             | `b"..."` or `[0x41, 66, ...]` (elements `0..=255`)                                           | Low latency / Balanced / High strength                                                                                                                                                        |
+| `i1!` / `i2!` / `i3!`             | `42u8` / `-1` / `0xFFu16` etc. integer literals (unsuffixed defaults to `i32`)               | Low latency / Balanced / High strength                                                                                                                                                        |
+| `fl1!` / `fl2!` / `fl3!`          | `3.15f32` / `-1.0` / `1e10` etc. float literals (unsuffixed defaults to `f64`)               | Low latency / Balanced / High strength                                                                                                                                                        |
+| `cs1!` / `cs2!` / `cs3!`          | `"..."` / `c"..."` / `b"..."` (`b"..."` may contain non-UTF-8 bytes; internal NUL forbidden) | Low latency / Balanced / High strength                                                                                                                                                        |
+| `f1!` / `f2!` / `f3!`             | `"path/to/file"` file path literal                                                           | Low latency / Balanced / High strength                                                                                                                                                        |
+| `s_fmt1!` / `s_fmt2!` / `s_fmt3!` | `"...{}..."` format string + args                                                            | Obfuscates literal segments by level then passes to `format!`, returning `String` (requires `alloc`, `no_std` compatible; level `2`/`3` segments may use `Heap*`, requiring default features) |
 
 **Container Types**
 
@@ -130,7 +126,7 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 **Integer / Float Macros**
 
 - Reuse the same byte-obfuscation core (integers are encoded in little-endian, floats via `to_bits` in little-endian, followed by *chunk → encrypt → store → emit*).
-- Payloads are always a single chunk with only 2 available storage forms; polymorphism is maintained via primitive stacking and emission forms, with no `Drop` auto-zeroing.
+- No `Drop` auto-zeroing.
 - `usize` / `isize` are encoded with 64-bit semantics (bridged via `u64` / `i64` then cast with `as`).
 - Floats only accept finite normal/subnormal values (`inf` / `NaN` are strictly rejected); `-0.0` preserves its sign bit bitwise—use `to_bits()` rather than `==` for assertions.
 
@@ -150,7 +146,6 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 **Not suitable for:**
 
 - Scenarios requiring compliance auditing or human-readable plaintext in binaries.
-- Obfuscating massive files (expanded code size grows significantly with payload size and security level; see [Benchmarks](#benchmarks)).
 - Release pipelines requiring deterministic artifact hashes (reproducible builds).
 
 ## Feature Flags
@@ -161,9 +156,9 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 
 Notes:
 
-- Disabling default features switches to pure-stack mode: Level 1 macros (`s1` / `b1` / `i1` / `fl1` / `cs1` / `f1`) are always pure-stack and unaffected. If the peak intermediate chunk container exceeds 1024B without heap support enabled, a compile-time error will be emitted (keep default features enabled for high security levels + long payloads).
+- Disabling default features switches to pure-stack mode: Level 1 macros (`s1` / `b1` / `i1` / `fl1` / `cs1` / `f1`) are always pure-stack and unaffected. If the peak intermediate chunk container exceeds 2048B without heap support enabled, a compile-time error will be emitted.
 - `s_fmt1!` / `s_fmt2!` / `s_fmt3!` expand to `alloc::format!` and return `String`, requiring `alloc` downstream (`no_std` compatible), regardless of pure-stack settings.
-- Runtime fixedly depends on `crypto` / `types` / `encoding` from `lib-unknown` (version `0.3.2` on crates.io); `encoding` is used for Hex / Base64 decoding in expanded code and cannot be opted out.
+- Runtime fixedly depends on `crypto` / `types` / `encoding` from `lib-unknown`; `encoding` is used for Hex / Base64 decoding in expanded code and cannot be opted out.
 
 To disable default features (pure stack, no heap):
 
@@ -187,14 +182,14 @@ The sole source for the data below is `tests/perf.rs` (re-runnable via `cargo te
 <details>
 <summary>Benchmark Configuration</summary>
 
-| Parameter      | Value    | Description                                                                                                                   |
-|:---------------|:---------|:------------------------------------------------------------------------------------------------------------------------------|
-| `PAYLOAD_LEN`  | 1024     | Payload size in bytes, filled with `'a'`                                                                                      |
-| `LOOPS`        | 512      | Number of "decrypt + checksum" iterations per guest run                                                                       |
-| `REPEATS`      | 3        | Repetitions per test case, taking the median                                                                                  |
-| `TIMEOUT_SECS` | 300      | Timeout per single build / run (seconds)                                                                                      |
+| Parameter      | Value    | Description                                                                                                                                  |
+|:---------------|:---------|:---------------------------------------------------------------------------------------------------------------------------------------------|
+| `PAYLOAD_LEN`  | 1024     | Payload size in bytes, filled with `'a'`                                                                                                     |
+| `LOOPS`        | 512      | Number of "decrypt + checksum" iterations per guest run                                                                                      |
+| `REPEATS`      | 3        | Repetitions per test case, taking the median                                                                                                 |
+| `TIMEOUT_SECS` | 300      | Timeout per single build / run (seconds)                                                                                                     |
 | profile        | release  | Cold build compiles an isolated temp project from scratch (including 3rd-party deps); incremental build rewrites only `main.rs` after warmup |
-| `EXPECTED_SUM` | 50855936 | Checksum assertion value (`1024 × 97 × 512`) as a correctness gate                                                            |
+| `EXPECTED_SUM` | 50855936 | Checksum assertion value (`1024 × 97 × 512`) as a correctness gate                                                                           |
 
 Parameter Notes:
 
@@ -209,13 +204,13 @@ Parameter Notes:
 
 </details>
 
-| Case              | Time / Deobf | Total Runtime (512 loops, incl. startup) | Incremental Build     | Cold Build             | Binary Size (unstripped) | Expand Chars     |
-|:------------------|:-------------|:-----------------------------------------|:----------------------|:-----------------------|:-------------------------|:-----------------|
-| Plaintext Baseline| —            | 10.28359ms                               | 121.289463ms          | 121.380116ms           | 445040                   | 1437             |
-| CasualX obfbytes! | 0.08µs       | 10.322836ms (0%)                         | 161.609633ms (33%)    | 994.557928ms (719%)    | 448064 (1%)              | 7780 (441%)      |
-| obfstr2 b1!       | 19.80µs      | 20.421658ms (99%)                        | 1.535624276s (1166%)  | 5.001506501s (4021%)   | 569376 (28%)             | 146310 (10082%)  |
-| obfstr2 b2!       | 696.48µs     | 366.882018ms (3468%)                     | 2.432857225s (1906%)  | 7.128522616s (5773%)   | 715024 (61%)             | 406195 (28167%)  |
-| obfstr2 b3!       | 1462.54µs    | 759.106147ms (7282%)                     | 7.14388193s (5790%)   | 10.7320194s (8742%)    | 1115248 (151%)           | 972426 (67571%)  |
+| Case               | Time / Deobf | Total Runtime (512 loops, incl. startup) | Incremental Build   | Cold Build           | Binary Size (unstripped) | Expand Chars    |
+|:-------------------|:-------------|:-----------------------------------------|:--------------------|:---------------------|:-------------------------|:----------------|
+| Plaintext Baseline | —            | 10.285437ms                              | 171.769429ms        | 433.035579ms         | 445032                   | 1437            |
+| CasualX obfbytes!  | 0.04µs       | 10.303865ms (0%)                         | 202.531839ms (18%)  | 2.691593563s (522%)  | 448064 (1%)              | 7780 (441%)     |
+| obfstr2 b1!        | 0.29µs       | 10.433189ms (1%)                         | 817.921917ms (376%) | 6.882235144s (1489%) | 506128 (14%)             | 72695 (4959%)   |
+| obfstr2 b2!        | 295.98µs     | 161.827931ms (1473%)                     | 1.250216479s (628%) | 7.785976764s (1698%) | 577728 (30%)             | 171635 (11844%) |
+| obfstr2 b3!        | 934.00µs     | 488.495427ms (4649%)                     | 2.72362967s (1486%) | 7.952317559s (1736%) | 822744 (85%)             | 449291 (31166%) |
 
 ## Security
 

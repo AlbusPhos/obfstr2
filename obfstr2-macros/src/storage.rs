@@ -210,7 +210,7 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                     #decode
                 }
             },
-            support: |size| (6..=1024).contains(&size),
+            support: |size| (8..=256).contains(&size),
             security: 30,
             latency: 10,
         },
@@ -254,7 +254,7 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                     #decode
                 }
             },
-            support: |size| (8..=1024).contains(&size),
+            support: |size| (8..=386).contains(&size),
             security: 30,
             latency: 10,
         },
@@ -298,11 +298,11 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                     #decode
                 }
             },
-            support: |size| (8..=1024).contains(&size),
+            support: |size| (8..=386).contains(&size),
             security: 30,
             latency: 10,
         },
-        // PEM 格式拟真存储策略
+        // PEM 格式拟真存储策略（单连续字符串 + 抗 LLVM DCE 优化）
         Storage {
             name: "pem",
             ast: |ident, family, data| {
@@ -333,28 +333,24 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                     padded.extend_from_slice(&dummy_bytes);
                 }
 
-                // 5. 进行标准 Base64 编码（编译期复用 lib_unknown::encoding::base64）
+                // 5. 进行标准 Base64 编码
                 let b64 = base64_encode_vec(&padded, false);
 
-                // 6. 按标准 64 字符分行
-                let mut lines: Vec<String> = b64
-                    .chunks(64)
-                    .map(|c| {
-                        let mut line = String::from_utf8_lossy(c).into_owned();
-                        line.push('\n');
-                        line
-                    })
-                    .collect();
-
-                // 7. 插入 PEM 头尾标记
+                // 6. 拼接为完整的单字符串 PEM 文本（保证内存中绝对连续）
                 let tag = profile.tag;
-                lines.insert(0, format!("-----BEGIN {}-----\n", tag));
-                lines.push(format!("-----END {}-----\n", tag));
+                let mut pem_str = String::with_capacity(b64.len() + 128);
+                pem_str.push_str(&format!("-----BEGIN {}-----\n", tag));
+                for chunk in b64.chunks(64) {
+                    pem_str.push_str(&String::from_utf8_lossy(chunk));
+                    pem_str.push('\n');
+                }
+                pem_str.push_str(&format!("-----END {}-----\n", tag));
 
                 let const_name = format_ident!("__STATIC_PEM_{}", random::<u32>());
 
                 quote! {
-                    static #const_name: &[&str] = &[#(#lines),*];
+                    // 单一连续字符串常量，强制分配在一段连续的 .rodata 空间内
+                    static #const_name: &str = #pem_str;
                     let mut #ident = #family::<#size>::new();
                     {
                         let mut _written = 0usize;
@@ -363,14 +359,31 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                             _buf.extend_from_slice(&[0u8; 48]).unwrap_unchecked();
                         }
 
-                        'pem_outer: for &line in ::core::hint::black_box(#const_name) {
-                            if line.as_bytes().first() == Some(&b'-') { continue; }
+                        // 将整个连续 PEM 切片通过 black_box 保护
+                        let _pem_bytes = ::core::hint::black_box(#const_name.as_bytes());
+                        let mut _pos = 0usize;
+
+                        'pem_outer: while _pos < _pem_bytes.len() && _written < #size {
+                            // 查找下一行行尾 (\n)
+                            let mut _end = _pos;
+                            while _end < _pem_bytes.len() && _pem_bytes[_end] != b'\n' {
+                                _end += 1;
+                            }
+                            let _line = &_pem_bytes[_pos.._end];
+                            _pos = _end + 1;
+
+                            // 如果遇到空行或头尾标识（以 '-' 开头）：
+                            // 使用 black_box 标记引用，向 LLVM 表明头尾数据已被实际访问，不可剔除
+                            if _line.is_empty() || _line[0] == b'-' {
+                                ::core::hint::black_box(_line);
+                                continue;
+                            }
 
                             let _rem = #size - _written;
                             let _take = if _rem < 48 { _rem } else { 48 };
 
                             let (_, _n) = ::obfstr2::encoding::base64::base64_decode(
-                                ::core::hint::black_box(line.as_bytes()),
+                                ::core::hint::black_box(_line),
                                 &mut _buf[.._take],
                             );
                             unsafe {

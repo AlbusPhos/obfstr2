@@ -13,7 +13,7 @@ use lib_unknown::rand::core::{random, random_range, shuffle};
 use proc_macro2::{Ident as Ident2, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
 
-pub(crate) const STACK_BUDGET: usize = 1024;
+pub(crate) const STACK_BUDGET: usize = 2048;
 
 /// 强度档位公共参数（延迟上限 / 组合安全度下限 / 原语叠加倍率 / 逐层非内联包装概率 / 短块预填充）。
 #[derive(Clone, Copy)]
@@ -395,6 +395,103 @@ fn gen_integrity_check(is_junk: bool, final_ident: &Ident2) -> TokenStream2 {
     }
 }
 
+/// 单个折叠组的最小子节点数。
+const FOLD_GROUP_MIN: usize = 4;
+/// 单个折叠组的最大子节点数。
+const FOLD_GROUP_MAX: usize = 12;
+
+/// 一个待发射的块节点。
+///
+/// `stmt` 既可以在根作用域执行，也可以被搬进任意层级的折叠函数：
+/// 两个作用域都提供同名的 `&mut MainTy` 与 `mut u8` ghost 变量，
+/// 因此块语句本身无需任何改写。
+struct ChunkNode {
+    stmt: TokenStream2,
+}
+
+/// 把一组相邻块节点折叠为独立函数，返回只含一条调用的父级节点。
+#[allow(clippy::too_many_arguments)]
+fn seal_chunk_group(
+    group: Vec<ChunkNode>,
+    id: u64,
+    depth: usize,
+    idx: usize,
+    main_ty: &TokenStream2,
+    bytes: &Ident2,
+    ghost: &Ident2,
+    cold_pct: u8,
+    prelude: &mut TokenStream2,
+) -> ChunkNode {
+    let fold_fn = format_ident!("__fold_{id}_{depth}_{idx}");
+    let stmts = group.iter().map(|node| &node.stmt);
+    let cold_attr = if random_range(0..100u8) < cold_pct {
+        quote!(#[cold])
+    } else {
+        quote!()
+    };
+
+    prelude.extend(quote! {
+        #cold_attr
+        #[inline(never)]
+        #[allow(unused_mut)]
+        fn #fold_fn(#bytes: &mut #main_ty, mut #ghost: u8) -> u8 {
+            #(#stmts)*
+            ::core::hint::black_box(#ghost)
+        }
+    });
+
+    ChunkNode {
+        stmt: quote! {
+            #[allow(function_casts_as_integer)]
+            let _ = ::core::hint::black_box(#fold_fn) as usize;
+            #ghost = #fold_fn(#bytes, ::core::hint::black_box(#ghost));
+        },
+    }
+}
+
+/// 自底向上把 O(M) 个块节点折叠成多级调用树，直到根节点数 <= [`FOLD_GROUP_MAX`]。
+///
+/// 每轮除至多一个尾部单节点晋升外，每个组至少合并 2 个节点，
+/// 因此节点数严格下降，折叠必然终止；根函数与单个折叠函数都只承载
+/// 有限个（<= [`FOLD_GROUP_MAX`]）块节点，不再随块数线性膨胀。
+#[allow(clippy::too_many_arguments)]
+fn fold_chunk_nodes(
+    mut nodes: Vec<ChunkNode>,
+    id: u64,
+    main_ty: &TokenStream2,
+    bytes: &Ident2,
+    ghost: &Ident2,
+    cold_pct: u8,
+    prelude: &mut TokenStream2,
+) -> Vec<ChunkNode> {
+    let mut depth = 0usize;
+    while nodes.len() > FOLD_GROUP_MAX {
+        let mut next = Vec::with_capacity(nodes.len() / 2 + 1);
+        let mut groups = nodes.into_iter();
+        let mut idx = 0usize;
+
+        loop {
+            let cap = random_range(FOLD_GROUP_MIN..=FOLD_GROUP_MAX);
+            let group: Vec<ChunkNode> = groups.by_ref().take(cap).collect();
+            match group.len() {
+                0 => break,
+                // 尾部单节点不套冗余函数壳，直接晋升到下一轮与邻居合并。
+                1 => next.extend(group),
+                _ => {
+                    next.push(seal_chunk_group(
+                        group, id, depth, idx, main_ty, bytes, ghost, cold_pct, prelude,
+                    ));
+                    idx += 1;
+                }
+            }
+        }
+
+        nodes = next;
+        depth += 1;
+    }
+    nodes
+}
+
 pub(crate) fn build_obfuscated_bytes(
     mut input: Vec<u8>,
     tier: TierParams,
@@ -407,7 +504,8 @@ pub(crate) fn build_obfuscated_bytes(
     let mut work_units: Vec<(Vec<u8>, bool)> = Vec::new();
     let mut i = 1;
     while !input.is_empty() {
-        let take_size = random_range({ 2usize * i }..{ 8 * i }).min(input.len());
+        let base = (((i as f64).powf(1.5)).ceil() * 1.3) as usize;
+        let take_size = random_range({ 6 * base }..{ 9 * base }).min(input.len());
         let real_data: Vec<u8> = input.drain(..take_size).collect();
         let pt_len = real_data.len();
         work_units.push((real_data, false));
@@ -425,6 +523,7 @@ pub(crate) fn build_obfuscated_bytes(
         i += 1;
     }
 
+    let raw_bytes = format_ident!("__raw_bytes_{id}");
     let bytes = format_ident!("__bytes_{id}");
     let ghost_state = format_ident!("__ghost_state_{id}");
 
@@ -434,9 +533,10 @@ pub(crate) fn build_obfuscated_bytes(
     } else {
         quote!(::obfstr2::types::buffer::StackBytes)
     };
+    let main_ty = quote!(#main_type_path::<#size>);
 
     let mut chunk_prelude = TokenStream2::new();
-    let mut chunk_body = TokenStream2::new();
+    let mut chunk_nodes: Vec<ChunkNode> = Vec::new();
     let mut chunk_inline_count: u32 = 0;
 
     for (seq, (chunk_data, is_junk)) in (1..).zip(work_units) {
@@ -516,7 +616,7 @@ pub(crate) fn build_obfuscated_bytes(
             random_range(0..100u8) < effective_wrap_pct(tier.wrap_pct, chunk_inline_count);
         let chunk_ret_ty = quote!(#chunk_type_path<#pt_len>);
 
-        if wrap_chunk {
+        let node_stmt = if wrap_chunk {
             let cold_attr = if random_range(0..100u8) < tier.cold_pct {
                 quote!(#[cold])
             } else {
@@ -537,7 +637,7 @@ pub(crate) fn build_obfuscated_bytes(
                     }
                 });
 
-                chunk_body.extend(quote! {
+                quote! {
                     let mut #closure_ident = move || -> #chunk_ret_ty {
                         #storage_ast
                         #dec_prelude
@@ -549,7 +649,7 @@ pub(crate) fn build_obfuscated_bytes(
                     unsafe { #bytes.extend_from_slice(#val_chunk.as_slice()).unwrap_unchecked(); }
                     #val_chunk.wipe_data();
                     drop(#val_chunk);
-                });
+                }
             } else {
                 let chunk_fn = format_ident!("__chunk_fn_{tag}");
                 let val_chunk = format_ident!("__chunk_val_{tag}");
@@ -566,18 +666,19 @@ pub(crate) fn build_obfuscated_bytes(
                     }
                 });
 
-                chunk_body.extend(quote! {
+                quote! {
                     #[allow(function_casts_as_integer)]
                     let _ = ::core::hint::black_box(#chunk_fn) as usize;
                     let mut #val_chunk = #chunk_fn();
                     unsafe { #bytes.extend_from_slice(#val_chunk.as_slice()).unwrap_unchecked(); }
                     #val_chunk.wipe_data();
                     drop(#val_chunk);
-                });
+                }
             }
         } else {
             let val_chunk = format_ident!("__chunk_val_{tag}");
-            chunk_body.extend(quote! {
+            chunk_inline_count += 1;
+            quote! {
                 {
                     #storage_ast
                     #dec_prelude
@@ -588,25 +689,44 @@ pub(crate) fn build_obfuscated_bytes(
                     #val_chunk.wipe_data();
                     drop(#val_chunk);
                 }
-            });
-            chunk_inline_count += 1;
-        }
+            }
+        };
 
-        chunk_body.extend(quote! {
+        let mut node_stmt = node_stmt;
+        node_stmt.extend(quote! {
             if let Some(&_last_byte) = #bytes.as_slice().last() {
                 #ghost_state = #ghost_state.wrapping_add(_last_byte);
             }
         });
+        chunk_nodes.push(ChunkNode { stmt: node_stmt });
+    }
+
+    let roots = fold_chunk_nodes(
+        chunk_nodes,
+        id,
+        &main_ty,
+        &bytes,
+        &ghost_state,
+        tier.cold_pct,
+        &mut chunk_prelude,
+    );
+    let mut chunk_body = TokenStream2::new();
+    for node in roots {
+        chunk_body.extend(node.stmt);
     }
 
     Ok(quote! {
         {
             #chunk_prelude
-            let mut #bytes = #main_type_path::<#size>::new();
+            let mut #raw_bytes = #main_ty::new();
             let mut #ghost_state: u8 = 0_u8;
-            #chunk_body
+            {
+                #[allow(unused_variables)]
+                let #bytes: &mut #main_ty = &mut #raw_bytes;
+                #chunk_body
+            }
             ::core::hint::black_box(#ghost_state);
-            #bytes
+            #raw_bytes
         }
     })
 }
@@ -622,6 +742,40 @@ mod tests {
         assert_eq!(effective_wrap_pct(50, 0), 50);
         assert_eq!(effective_wrap_pct(85, 0), 85);
         assert_eq!(effective_wrap_pct(0, 999), 0);
+    }
+
+    /// 折叠树必须把根节点数收敛到 `FOLD_ROOT_MAX`，且小块输入不生成任何折叠壳。
+    #[test]
+    fn fold_chunk_nodes_bounds_root_spine() {
+        let main_ty = quote!(u8);
+        let bytes = format_ident!("__b");
+        let ghost = format_ident!("__g");
+        let make = |n: usize| {
+            (0..n)
+                .map(|i| ChunkNode {
+                    stmt: quote!(let _ = #i as u8;),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut prelude = TokenStream2::new();
+        let roots = fold_chunk_nodes(make(1), 1, &main_ty, &bytes, &ghost, 0, &mut prelude);
+        assert_eq!(roots.len(), 1);
+        assert!(
+            !prelude.to_string().contains("__fold_"),
+            "单块不应生成折叠壳"
+        );
+
+        let mut prelude = TokenStream2::new();
+        let roots = fold_chunk_nodes(make(1000), 2, &main_ty, &bytes, &ghost, 0, &mut prelude);
+        assert!(
+            roots.len() <= FOLD_GROUP_MAX,
+            "根节点数应收敛到 {FOLD_GROUP_MAX}"
+        );
+        assert!(
+            prelude.to_string().contains("__fold_"),
+            "大规模必须生成折叠函数"
+        );
     }
 
     /// 批量模拟三档 Tier 的加密选层过程（`encrypt_layers`），用于离线评估配置合理性。

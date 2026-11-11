@@ -2,16 +2,12 @@
 
 > **Polymorphic compile-time string/bytes/int/float/cstr/file obfuscation**
 
-[![Type](https://img.shields.io/badge/Project%20Type-Library-green.svg)](#快速开始-quick-start)
-[![License](https://img.shields.io/badge/license-MPL_2.0-brightgreen.svg)](https://mozilla.org/MPL/2.0/)
-
-[![Crates.io](https://img.shields.io/crates/v/obfstr2.svg)](https://crates.io/crates/obfstr2)
-[![Documentation](https://docs.rs/obfstr2/badge.svg)](https://docs.rs/obfstr2)
-[![Downloads](https://img.shields.io/crates/d/obfstr2.svg)](https://crates.io/crates/obfstr2)
-[![Release](https://img.shields.io/github/v/release/AlbusPhos/obfstr2)](https://github.com/AlbusPhos/obfstr2/releases)
-
-[![CI](https://github.com/AlbusPhos/obfstr2/actions/workflows/ci.yml/badge.svg)](https://github.com/AlbusPhos/obfstr2/actions)
-[![MSRV](https://img.shields.io/badge/MSRV-1.92-blue.svg)](Cargo.toml)
+[![Crates.io](https://img.shields.io/crates/v/obfstr2?logo=rust)](https://crates.io/crates/obfstr2)
+[![Docs.rs](https://img.shields.io/docsrs/obfstr2?logo=docs.rs)](https://docs.rs/obfstr2)
+[![CI](https://img.shields.io/github/actions/workflow/status/AlbusPhos/obfstr2/ci.yml?logo=github&label=CI)](https://github.com/AlbusPhos/obfstr2/actions)
+[![MSRV](https://img.shields.io/crates/msrv/obfstr2?logo=rust&label=MSRV)](https://crates.io/crates/obfstr2)
+[![Downloads](https://img.shields.io/crates/d/obfstr2?color=blue)](https://crates.io/crates/obfstr2)
+[![License](https://img.shields.io/crates/l/obfstr2)](https://mozilla.org/MPL/2.0/)
 
 **语言：** [English](README_en.md) | 简体中文
 
@@ -83,7 +79,7 @@ fn main() {
 1. **极度多态化** —— 同一份输入每次编译都会产出形态完全不同的密文：
    - **随机分块**：按递增步长随机切分载荷，分块边界每次编译不同；
    - **原语随机叠加**：按强度档随机选取若干层加解密算法依次叠加，直到组合安全度达标为止；
-   - **随机存储形态**：密文可能以字节串 / `u8` 数组 / `u64` 数组 / `u128` 数组 / MAC 地址 / UUID / IPv6 地址等多种"伪装外观"之一出现；
+   - **随机存储形态**：密文可能以字节串 / `u64` 数组 / `u128` 数组 / MAC 地址 / UUID / IPv6 地址 / PEM 等多种"伪装外观"之一出现；
    - **密钥隐写**：每层密钥同样经随机存储形态隐藏，仅在运行时才还原，展开代码中不会出现明文密钥常量；
    - **干扰注入**：额外混入垃圾代码与无意义的伪状态变量，进一步扰乱静态分析与数据流追踪。
 
@@ -135,7 +131,7 @@ fn main() {
 **整数 / 浮点宏**
 
 - 复用同一套字节混淆内核（整数小端编码、浮点按 `to_bits` 小端编码后走分块→加密→存储→发射）；
-- 载荷恒为单 chunk，可用存储形态仅 2 种，多态性靠原语叠加与发射形态维持，无 `Drop` 自动清零；
+- 无 `Drop` 自动清零。
 - `usize` / `isize` 按 64 位语义编码（`u64` / `i64` 中转后 `as` 转换）；
 - 浮点仅接受有限常规值（`inf` / `NaN` 一律拒绝），`-0.0` 按位保留符号位，断言请用 `to_bits()` 而非 `==`。
 
@@ -154,7 +150,6 @@ fn main() {
 **不适合：**
 
 - 需要合规审计、明文可读的场景。
-- 超大文件混淆（展开体积随载荷与档位显著膨胀，见性能）。
 - 需要制品哈希稳定（可复现构建）的发布流程。
 
 ## 特性标志 (Feature Flags)
@@ -165,9 +160,9 @@ fn main() {
 
 注意：
 
-- 关闭后为纯栈：1 档（`s1` / `b1` / `i1` / `fl1` / `cs1` / `f1`）恒纯栈、无影响；chunk 中间容器峰值超 1024B 且无堆可用时为编译期报错（高强度档 + 长载荷请保留默认特性）。
+- 关闭后为纯栈：1 档（`s1` / `b1` / `i1` / `fl1` / `cs1` / `f1`）恒纯栈、无影响；chunk 中间容器峰值超 2048B 且无堆可用时为编译期报错。
 - `s_fmt1!` / `s_fmt2!` / `s_fmt3!` 展开为 `alloc::format!` 并返回 `String`，下游需 `alloc`（`no_std` 可用），与纯栈组合无关。
-- 运行时固定依赖 `lib-unknown` 的 `crypto` / `types` / `encoding`（版本 `0.3.2`，来自 crates.io）；`encoding` 用于展开代码的 Hex / Base64 解码，不可裁剪。
+- 运行时固定依赖 `lib-unknown` 的 `crypto` / `types` / `encoding`；`encoding` 用于展开代码的 Hex / Base64 解码，不可裁剪。
 
 如需禁用默认特性（纯栈、无堆）：
 
@@ -216,13 +211,13 @@ obfstr2 = { version = "0.3", default-features = false }
 
 </details>
 
-| 用例              | 每次去混淆耗时 | 运行耗时（512 次解密循环，含启动开销） | 增量构建耗时           | 冷构建耗时              | 产物二进制（未 strip） | expand 字符数    |
-|:------------------|:---------------|:---------------------------------------|:-----------------------|:------------------------|:-----------------------|:-----------------|
-| 明文基线          | —              | 10.28359ms                             | 121.289463ms           | 121.380116ms            | 445040                 | 1437             |
-| CasualX obfbytes! | 0.08µs         | 10.322836ms（0%）                      | 161.609633ms（33%）    | 994.557928ms（719%）    | 448064（1%）           | 7780（441%）     |
-| obfstr2 b1!       | 19.80µs        | 20.421658ms（99%）                     | 1.535624276s（1166%）  | 5.001506501s（4021%）   | 569376（28%）          | 146310（10082%） |
-| obfstr2 b2!       | 696.48µs       | 366.882018ms（3468%）                  | 2.432857225s（1906%）  | 7.128522616s（5773%）   | 715024（61%）          | 406195（28167%） |
-| obfstr2 b3!       | 1462.54µs      | 759.106147ms（7282%）                  | 7.14388193s（5790%）   | 10.7320194s（8742%）    | 1115248（151%）        | 972426（67571%） |
+| 用例              | 每次去混淆耗时 | 运行耗时（512 次解密循环，含启动开销） | 增量构建耗时         | 冷构建耗时            | 产物二进制（未 strip） | expand 字符数    |
+|:------------------|:---------------|:---------------------------------------|:---------------------|:----------------------|:-----------------------|:-----------------|
+| 明文基线          | —              | 10.285437ms                            | 171.769429ms         | 433.035579ms          | 445032                 | 1437             |
+| CasualX obfbytes! | 0.04µs         | 10.303865ms（0%）                      | 202.531839ms（18%）  | 2.691593563s（522%）  | 448064（1%）           | 7780（441%）     |
+| obfstr2 b1!       | 0.29µs         | 10.433189ms（1%）                      | 817.921917ms（376%） | 6.882235144s（1489%） | 506128（14%）          | 72695（4959%）   |
+| obfstr2 b2!       | 295.98µs       | 161.827931ms（1473%）                  | 1.250216479s（628%） | 7.785976764s（1698%） | 577728（30%）          | 171635（11844%） |
+| obfstr2 b3!       | 934.00µs       | 488.495427ms（4649%）                  | 2.72362967s（1486%） | 7.952317559s（1736%） | 822744（85%）          | 449291（31166%） |
 
 ## 安全性 (Security)
 > 免责声明：本项目仅供软件安全防护、防逆向工程研究、固件代码保护等合法合规场景使用，严禁用于任何恶意软件制作或非法渗透测试。

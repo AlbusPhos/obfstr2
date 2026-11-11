@@ -5,19 +5,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! 裸机链路测试：`x86_64-unknown-none` 下解密并 `write(1)` 输出。
-//!
-//! 由原 `obfstr2-macros/src/bytes.rs::test_*_nostd` 迁移而来：
-//! - 每个用例独立 `DnyRun`（目录唯一），可并行，无共享 `RUNNER`；
-//! - 删除 `clear_dny_project`（原 `None` 超时在并行时会永久等待存活锁，是 hang 根因）；
-//! - 载荷由 1024B 收敛为 128B（链路正确性与大载荷正交，大载荷只影响体积）；
-//! - 仅保留代表档：`b1`（纯栈 + `default-features=false`，真裸机）与
-//!   `b2`（默认特性，堆栈随机）；`b3` 正确性由 `smoke.rs` 覆盖。
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use lib_unknown::dyntest::DnyRun;
 use std::time::Duration;
 
-/// 根包路径（编译期确定），比相对 `../../../..` 路径稳健（不依赖目录名）。
 fn obfstr2_dep(no_default: bool) -> String {
     if no_default {
         format!(
