@@ -10,7 +10,7 @@
 
 ---
 
-## [Unreleased]
+## [0.3.1] - 2026-11-11
 
 ### Added
 - 多级折叠调用树：chunk 节点数超过 12 时，自底向上折叠为 `#[inline(never)]` 函数，根作用域调用数收敛到 ≤ 12，避免大载荷展开后单一函数体线性膨胀（`obfstr2-macros/src/core.rs`）
@@ -39,3 +39,4 @@
 - 字符串 / 字节 / CStr 容器在离开作用域时执行 Volatile 擦除
 
 [0.3.0]: https://github.com/AlbusPhos/obfstr2/releases/tag/v0.3.0
+[0.3.1]: https://github.com/AlbusPhos/obfstr2/releases/tag/v0.3.1
