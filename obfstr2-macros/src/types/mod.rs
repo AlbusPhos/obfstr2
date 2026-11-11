@@ -11,12 +11,16 @@
 
 mod bytes;
 mod cstr;
+mod cwstr;
 mod float;
 mod int;
 mod str;
+mod wstr;
 
 pub(crate) use bytes::{b1, b2, b3, want_heap};
 pub(crate) use cstr::{cs1, cs2, cs3};
+pub(crate) use cwstr::{cw1, cw2, cw3};
 pub(crate) use float::{fl1, fl2, fl3};
 pub(crate) use int::{i1, i2, i3};
 pub(crate) use str::{s1, s2, s3};
+pub(crate) use wstr::{w1, w2, w3};

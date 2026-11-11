@@ -10,6 +10,16 @@
 
 ---
 
+## [Unreleased]
+
+### Added
+- `w1!` / `w2!` / `w3!` UTF-16 宽字符串混淆：编译期经 `encode_utf16` 转换，**不追加**结尾 `0u16`、**允许内部 NUL**；返回 `StackU16<N>` / `HeapU16<N>`（`N` 为码元数，空串为 0），适合显式长度 / 长度前缀 API；`w1` 恒纯栈，`w2` / `w3` 按档位与 `alloc` 选择容器
+- `cw1!` / `cw2!` / `cw3!` UTF-16 宽 C 字符串混淆：编译期经 `encode_utf16` 转换并自动追加唯一结尾 `0u16`，拒绝内部 NUL；返回 `StackU16<N>` / `HeapU16<N>`（`N` 含结尾码元），`as_ptr()` 可直接用于 Win32 `PCWSTR`；`cw1` 恒纯栈，`cw2` / `cw3` 按档位与 `alloc` 选择容器
+- 文档：README / README_en 增加宽字符串、宽 C 字符串宏、容器类型与示例
+
+### Changed
+- 解析层：统一解包 `macro_rules!` 元变量产生的不可见 `None` 分组，`iN!` / `flN!` / `csN!` / `bN!` 现在也能被用户宏转发；浮点解析由 4 个分支合并为 2 个；负整数改用 `u128` 绝对值 + `wrapping_neg` 简化边界处理；`bN!` 改为单次 `syn::Expr` 解析并改进误传字符串时的错误文案
+
 ## [0.3.1] - 2026-11-11
 
 ### Added
@@ -38,5 +48,5 @@
 - 引入现代对称密码学设计要素（SPN、动态 S 盒 / P 盒、ARX、雪崩效应）以对抗 `angr` 等符号执行工具
 - 字符串 / 字节 / CStr 容器在离开作用域时执行 Volatile 擦除
 
-[0.3.0]: https://github.com/AlbusPhos/obfstr2/releases/tag/v0.3.0
 [0.3.1]: https://github.com/AlbusPhos/obfstr2/releases/tag/v0.3.1
+[0.3.0]: https://github.com/AlbusPhos/obfstr2/releases/tag/v0.3.0

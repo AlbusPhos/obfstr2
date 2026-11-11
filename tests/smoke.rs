@@ -4,11 +4,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! 根 crate 冒烟测试：全部 18 个宏的小载荷 roundtrip。
+//! 根 crate 冒烟测试：全部 24 个宏的小载荷 roundtrip。
 //!
 //! 直接调用宏做断言，无需 dyntest 现场建工程，毫秒级。
 use obfstr2::types::cstr::CStr;
-use obfstr2::{b1, b2, b3, cs1, cs2, cs3, f1, f2, f3, fl1, fl2, fl3, i1, i2, i3, s1, s2, s3};
+use obfstr2::{
+    b1, b2, b3, cs1, cs2, cs3, cw1, cw2, cw3, f1, f2, f3, fl1, fl2, fl3, i1, i2, i3, s1, s2, s3,
+    w1, w2, w3,
+};
 
 macro_rules! assert_obf_s {
     ($m1:ident, $m2:ident, $m3:ident, [$($input:expr),+ $(,)?]) => {
@@ -129,6 +132,7 @@ fn int_all_tiers_roundtrip() {
     assert_eq!(i2!(0u8), 0u8);
     assert_eq!(i3!(255u8), 255u8);
     assert_eq!(i2!(-128i8), -128i8);
+    assert_eq!(i2!(-32768i16), i16::MIN);
     assert_eq!(i2!(127i8), 127i8);
     assert_eq!(i2!(0xFFu16), 0xFFu16);
     assert_eq!(i2!(1_000u32), 1_000u32);
@@ -217,6 +221,173 @@ fn cstr_all_tiers_roundtrip() {
     // Display lossy 与 as_ptr 可用
     assert_eq!(format!("{}", cs2!("abc")), "abc");
     assert!(!cs2!("abc").as_ptr().is_null());
+}
+
+#[test]
+fn wide_cstr_all_tiers_roundtrip() {
+    macro_rules! check {
+        ($input:literal) => {{
+            let mut expected: Vec<u16> = $input.encode_utf16().collect();
+            expected.push(0);
+
+            let (a, b, c) = (cw1!($input), cw2!($input), cw3!($input));
+            assert_eq!(
+                &*a,
+                expected.as_slice(),
+                "cw1 roundtrip failed: {:?}",
+                $input
+            );
+            assert_eq!(
+                &*b,
+                expected.as_slice(),
+                "cw2 roundtrip failed: {:?}",
+                $input
+            );
+            assert_eq!(
+                &*c,
+                expected.as_slice(),
+                "cw3 roundtrip failed: {:?}",
+                $input
+            );
+
+            assert_eq!(&*a, &*b);
+            assert_eq!(&*b, &*c);
+            assert_eq!(a[a.len() - 1], 0, "结尾码元应为 NUL");
+            let text = String::from_utf16(&a[..a.len() - 1]).unwrap();
+            assert_eq!(text, $input);
+        }};
+    }
+
+    check!("");
+    check!("hello");
+    check!("你好，世界🦀");
+    check!("kernel32.dll");
+}
+
+#[test]
+fn wide_str_all_tiers_roundtrip() {
+    macro_rules! check {
+        ($input:literal) => {{
+            let expected: Vec<u16> = $input.encode_utf16().collect();
+
+            let (a, b, c) = (w1!($input), w2!($input), w3!($input));
+            assert_eq!(
+                &*a,
+                expected.as_slice(),
+                "w1 roundtrip failed: {:?}",
+                $input
+            );
+            assert_eq!(
+                &*b,
+                expected.as_slice(),
+                "w2 roundtrip failed: {:?}",
+                $input
+            );
+            assert_eq!(
+                &*c,
+                expected.as_slice(),
+                "w3 roundtrip failed: {:?}",
+                $input
+            );
+
+            assert_eq!(&*a, &*b);
+            assert_eq!(&*b, &*c);
+            // 不自动追加结尾 NUL：长度必须与 encode_utf16 的码元数完全一致
+            assert_eq!(a.len(), expected.len(), "不应追加结尾 NUL");
+            let text = String::from_utf16(&*a).unwrap();
+            assert_eq!(text, $input);
+        }};
+    }
+
+    check!("");
+    check!("hello");
+    check!("你好，世界🦀");
+    check!("a\0b");
+    check!("\0");
+    check!("\0a\0");
+    check!("kernel32.dll");
+}
+
+#[test]
+fn wide_str_keeps_nul_and_no_terminator() {
+    let w = w2!("a\0b");
+    assert_eq!(&*w, &[0x61u16, 0, 0x62][..]);
+    assert_eq!(w.len(), 3);
+
+    let empty = w2!("");
+    assert!(empty.is_empty());
+
+    let tail = w1!("abc");
+    assert_eq!(&*tail, &[0x61u16, 0x62, 0x63][..]);
+}
+
+#[test]
+fn macro_metavariable_forwarding_works() {
+    // 用户把宏再包一层 macro_rules! 时，字面量/表达式元变量会被不可见 None 分组包裹；
+    // 所有基于 syn::Expr 的解析入口都必须解包，否则会误报“不支持表达式”。
+    macro_rules! fwd_s {
+        ($v:literal) => {
+            s1!($v)
+        };
+    }
+    macro_rules! fwd_b {
+        ($v:literal) => {
+            b1!($v)
+        };
+    }
+    macro_rules! fwd_b_arr {
+        ($v:literal) => {
+            b1!([0x61, $v])
+        };
+    }
+    macro_rules! fwd_cs {
+        ($v:literal) => {
+            cs1!($v)
+        };
+    }
+    macro_rules! fwd_i {
+        ($v:literal) => {
+            i1!($v)
+        };
+    }
+    macro_rules! fwd_neg_i {
+        ($v:literal) => {
+            i1!(-$v)
+        };
+    }
+    macro_rules! fwd_f {
+        ($v:literal) => {
+            fl1!($v)
+        };
+    }
+    macro_rules! fwd_neg_f {
+        ($v:literal) => {
+            fl1!(-$v)
+        };
+    }
+    macro_rules! fwd_w {
+        ($v:literal) => {
+            w1!($v)
+        };
+    }
+    macro_rules! fwd_cw {
+        ($v:literal) => {
+            cw1!($v)
+        };
+    }
+
+    assert_eq!(&*fwd_s!("hello"), "hello");
+    assert_eq!(&*fwd_b!(b"hi"), &b"hi"[..]);
+    assert_eq!(&*fwd_b_arr!(0x62), &[0x61u8, 0x62][..]);
+    assert_eq!(&*fwd_cs!("hi"), c"hi");
+    assert_eq!(&*fwd_cs!(c"hi"), c"hi");
+    assert_eq!(fwd_i!(42i32), 42i32);
+    assert_eq!(fwd_neg_i!(42i32), -42i32);
+    assert_eq!(fwd_f!(5f32), 5.0f32);
+    assert_eq!(fwd_neg_f!(5f32).to_bits(), (-5.0f32).to_bits());
+    assert_eq!(fwd_neg_f!(0.0f32).to_bits(), (-0.0f32).to_bits());
+    assert_eq!(&*fwd_w!("hi"), &[0x68u16, 0x69][..]);
+    assert_eq!(&*fwd_cw!("hi"), &[0x68u16, 0x69, 0][..]);
 }
 
 #[test]

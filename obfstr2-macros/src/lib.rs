@@ -6,7 +6,7 @@
 
 //! `obfstr2` 的内部过程宏实现 crate，无运行时，不可 doctest。
 //!
-//! 对外暴露 `s1~3!`、`b1~3!`、`f1~3!`、`i1~3!`、`fl1~3!`、`cs1~3!`（低延迟 / 均衡 / 高强度三档）与 `s_fmt!` 的过程宏本体。
+//! 对外暴露 `s1~3!`、`b1~3!`、`f1~3!`、`i1~3!`、`fl1~3!`、`cs1~3!`、`w1~3!`、`cw1~3!`（低延迟 / 均衡 / 高强度三档）与 `s_fmt!` 的过程宏本体。
 //!
 //! # Warning
 //!
@@ -21,6 +21,7 @@ mod types;
 
 #[cfg(test)]
 mod tests;
+mod utils;
 
 use proc_macro::TokenStream;
 
@@ -86,6 +87,32 @@ fn expand_cstr(
 ) -> TokenStream {
     match parse::parse_cstr(input.into()) {
         Ok(payload) => match build(payload) {
+            Ok(ts) => ts.into(),
+            Err(e) => err_to_compile_error(proc_macro2::Span::call_site(), e),
+        },
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+fn expand_cwstr(
+    input: TokenStream,
+    build: fn(parse::ParsedCWide) -> Result<proc_macro2::TokenStream, String>,
+) -> TokenStream {
+    match parse::parse_cwstr(input.into()) {
+        Ok(parsed) => match build(parsed) {
+            Ok(ts) => ts.into(),
+            Err(e) => err_to_compile_error(proc_macro2::Span::call_site(), e),
+        },
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+fn expand_wstr(
+    input: TokenStream,
+    build: fn(parse::ParsedWide) -> Result<proc_macro2::TokenStream, String>,
+) -> TokenStream {
+    match parse::parse_wstr(input.into()) {
+        Ok(parsed) => match build(parsed) {
             Ok(ts) => ts.into(),
             Err(e) => err_to_compile_error(proc_macro2::Span::call_site(), e),
         },
@@ -339,4 +366,77 @@ pub fn cs2(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn cs3(input: TokenStream) -> TokenStream {
     expand_cstr(input, types::cs3)
+}
+
+/// 宽字符串混淆宏本体（低延迟档）：只接受字符串字面量 `"..."`，按 UTF-16 展开，
+/// **不追加**结尾 `0u16`，内部 NUL 允许；展开为 `StackU16<N>`（`N` 为码元数，
+/// 空串为 0）。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn w1(input: TokenStream) -> TokenStream {
+    expand_wstr(input, types::w1)
+}
+
+/// 宽字符串混淆宏本体（均衡档）：输入与展开规则同 `w1`；返回容器在
+/// `StackU16` / `HeapU16` 间随机。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn w2(input: TokenStream) -> TokenStream {
+    expand_wstr(input, types::w2)
+}
+
+/// 宽字符串混淆宏本体（高强度档）：输入与展开规则同 `w1`；启用 `alloc`
+/// 时主容器走 `HeapU16`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn w3(input: TokenStream) -> TokenStream {
+    expand_wstr(input, types::w3)
+}
+
+/// 宽 C 字符串混淆宏本体（低延迟档）：只接受字符串字面量 `"..."`，按 UTF-16
+/// 展开后追加唯一结尾 `0u16`；载荷禁内部 NUL，展开为 `StackU16<N>`（`N` 含结尾码元）。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn cw1(input: TokenStream) -> TokenStream {
+    expand_cwstr(input, types::cw1)
+}
+
+/// 宽 C 字符串混淆宏本体（均衡档）：输入与展开规则同 `cw1`；返回容器在
+/// `StackU16` / `HeapU16` 间随机。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn cw2(input: TokenStream) -> TokenStream {
+    expand_cwstr(input, types::cw2)
+}
+
+/// 宽 C 字符串混淆宏本体（高强度档）：输入与展开规则同 `cw1`；启用 `alloc`
+/// 时主容器走 `HeapU16`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn cw3(input: TokenStream) -> TokenStream {
+    expand_cwstr(input, types::cw3)
 }

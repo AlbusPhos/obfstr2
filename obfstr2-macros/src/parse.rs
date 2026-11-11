@@ -16,9 +16,9 @@ use proc_macro2::TokenStream as TokenStream2;
 /// 调用方按自身字面量类型做二次匹配（`int` 要 `Lit::Int`，`float` 要 `Lit::Float`，
 /// 另有整数 token 兼容分支）；`what` 为各宏的“只接受……”前缀，错误文案与原内联版本逐字一致。
 pub(crate) fn split_neg(expr: syn::Expr, what: &str) -> syn::Result<(syn::Lit, bool)> {
-    match expr {
+    match unwrap_group(expr) {
         syn::Expr::Lit(syn::ExprLit { lit, .. }) => Ok((lit, false)),
-        syn::Expr::Unary(u) if matches!(u.op, syn::UnOp::Neg(_)) => match *u.expr {
+        syn::Expr::Unary(u) if matches!(u.op, syn::UnOp::Neg(_)) => match unwrap_group(*u.expr) {
             syn::Expr::Lit(syn::ExprLit { lit, .. }) => Ok((lit, true)),
             other => Err(syn::Error::new_spanned(
                 &other,
@@ -157,58 +157,36 @@ fn parse_int_positive(n: &syn::LitInt) -> syn::Result<ParsedInt> {
     Ok(ParsedInt { bytes, ty })
 }
 
-/// 负数字面量：先按 `i128` 解析绝对值再取负，避免 `-(-MIN)` 这类边界溢出误拒。
+/// 负数字面量：先按 `u128` 解析绝对值再取负，避免 `-MIN` 这类边界溢出误拒。
 fn parse_int_negative(n: &syn::LitInt) -> syn::Result<ParsedInt> {
     let ty = IntTy::from_suffix(n.suffix()).ok_or_else(|| int_suffix_err(n))?;
-    if !ty.is_signed() && ty != IntTy::I32 {
-        // ty 不可能是无后缀之外的无符号之外的东西；无符号一律拒绝。
-        // （无后缀视为 i32，属于有符号，走下面流程。）
-        if !ty.is_signed() {
-            return Err(syn::Error::new_spanned(
-                n,
-                format!("负数不能用于无符号整数类型 {}", ty.display()),
-            ));
-        }
+    if !ty.is_signed() {
+        return Err(syn::Error::new_spanned(
+            n,
+            format!("负数不能用于无符号整数类型 {}", ty.display()),
+        ));
     }
     // 绝对值按 `u128` 解析，兼容 `-i128::MIN`（其绝对值超出 `i128::MAX`）。
     let mag: u128 = n.base10_parse().map_err(|_| range_err(n, ty))?;
     // 各有符号类型的绝对值上限 = MAX + 1（允许 MIN）。
     macro_rules! neg_checked {
-        ($max:expr, $min:expr, $ty:ty) => {{
-            let limit = ($max as u128) + 1;
-            if mag > limit {
-                return Err(range_err(n, ty));
-            }
-            if mag == limit {
-                <$ty>::MIN.to_le_bytes().to_vec()
-            } else {
-                (-(mag as i128) as $ty).to_le_bytes().to_vec()
-            }
-        }};
-    }
-    let bytes = match ty {
-        IntTy::I8 => neg_checked!(i8::MAX, i8::MIN, i8),
-        IntTy::I16 => neg_checked!(i16::MAX, i16::MIN, i16),
-        IntTy::I32 => neg_checked!(i32::MAX, i32::MIN, i32),
-        IntTy::I64 => neg_checked!(i64::MAX, i64::MIN, i64),
-        IntTy::I128 => {
-            const LIMIT: u128 = (i128::MAX as u128) + 1;
+        ($ty:ty) => {{
+            const LIMIT: u128 = (<$ty>::MAX as u128) + 1;
             if mag > LIMIT {
                 return Err(range_err(n, ty));
             }
-            if mag == LIMIT {
-                i128::MIN.to_le_bytes().to_vec()
-            } else {
-                (-(mag as i128)).to_le_bytes().to_vec()
-            }
-        }
-        IntTy::Isize => neg_checked!(i64::MAX, i64::MIN, i64),
-        _ => {
-            return Err(syn::Error::new_spanned(
-                n,
-                format!("负数不能用于无符号整数类型 {}", ty.display()),
-            ));
-        }
+            // `mag == LIMIT` 时 `as $ty` 按二补数得到 MIN，`wrapping_neg(MIN)` 仍为 MIN；
+            // 其余情况下得到 `-mag`。无需为 i128 单独特判。
+            (mag as $ty).wrapping_neg().to_le_bytes().to_vec()
+        }};
+    }
+    let bytes = match ty {
+        IntTy::I8 => neg_checked!(i8),
+        IntTy::I16 => neg_checked!(i16),
+        IntTy::I32 => neg_checked!(i32),
+        IntTy::I64 | IntTy::Isize => neg_checked!(i64),
+        IntTy::I128 => neg_checked!(i128),
+        _ => unreachable!("无符号类型已在函数入口拒绝"),
     };
     Ok(ParsedInt { bytes, ty })
 }
@@ -250,14 +228,10 @@ pub(crate) fn parse_float(input: TokenStream2) -> syn::Result<ParsedFloat> {
         expr,
         "flN! 只接受浮点字面量（如 3.14f32、-1.0、1e10，空后缀视为 f64)",
     )? {
-        (syn::Lit::Float(n), false) => parse_float_positive(&n),
+        (syn::Lit::Float(n), neg) => parse_lit_float(&n, neg),
         // `5f32` 形态：整数 token + 浮点后缀，syn 可能判为 Lit::Int，引导至浮点处理。
-        (syn::Lit::Int(n), false) if n.suffix() == "f32" || n.suffix() == "f64" => {
-            parse_float_from_int_token(&n)
-        }
-        (syn::Lit::Float(n), true) => parse_float_negative(&n),
-        (syn::Lit::Int(n), true) if n.suffix() == "f32" || n.suffix() == "f64" => {
-            parse_float_from_neg_int_token(&n)
+        (syn::Lit::Int(n), neg) if n.suffix() == "f32" || n.suffix() == "f64" => {
+            parse_float_from_int_token(&n, neg)
         }
         (lit, _) => Err(syn::Error::new_spanned(
             &lit,
@@ -315,28 +289,9 @@ macro_rules! finish_float {
     }};
 }
 
-/// 正浮点字面量：`base10_parse` 处理下划线/指数/后缀，之后做有限性检查。
-fn parse_float_positive(n: &syn::LitFloat) -> syn::Result<ParsedFloat> {
-    let ty =
-        FloatTy::from_suffix(n.suffix()).ok_or_else(|| float_suffix_err(n.span(), n.suffix()))?;
-    match ty {
-        FloatTy::F32 => {
-            let v: f32 = n
-                .base10_parse()
-                .map_err(|e| syn::Error::new(n.span(), format!("浮点字面量解析失败：{e}")))?;
-            finish_float!(v, n.span(), ty, nan)
-        }
-        FloatTy::F64 => {
-            let v: f64 = n
-                .base10_parse()
-                .map_err(|e| syn::Error::new(n.span(), format!("浮点字面量解析失败：{e}")))?;
-            finish_float!(v, n.span(), ty, nan)
-        }
-    }
-}
-
-/// 负浮点字面量：正值解析后取负再 `to_bits`，保留 `-0.0` 符号位。
-fn parse_float_negative(n: &syn::LitFloat) -> syn::Result<ParsedFloat> {
+/// 浮点字面量：`base10_parse` 处理下划线/指数/后缀，`neg` 控制是否取负；
+/// 取负后立即 `to_bits`，因此 `-0.0` 的符号位由 `-mag` 精确保留。
+fn parse_lit_float(n: &syn::LitFloat, neg: bool) -> syn::Result<ParsedFloat> {
     let ty =
         FloatTy::from_suffix(n.suffix()).ok_or_else(|| float_suffix_err(n.span(), n.suffix()))?;
     match ty {
@@ -344,56 +299,35 @@ fn parse_float_negative(n: &syn::LitFloat) -> syn::Result<ParsedFloat> {
             let mag: f32 = n
                 .base10_parse()
                 .map_err(|e| syn::Error::new(n.span(), format!("浮点字面量解析失败：{e}")))?;
-            finish_float!(-mag, n.span(), ty, nan)
+            finish_float!(if neg { -mag } else { mag }, n.span(), ty, nan)
         }
         FloatTy::F64 => {
             let mag: f64 = n
                 .base10_parse()
                 .map_err(|e| syn::Error::new(n.span(), format!("浮点字面量解析失败：{e}")))?;
-            finish_float!(-mag, n.span(), ty, nan)
+            finish_float!(if neg { -mag } else { mag }, n.span(), ty, nan)
         }
     }
 }
 
-/// `5f32` 防御分支：整数 token + 浮点后缀时按浮点解析。
-fn parse_float_from_int_token(n: &syn::LitInt) -> syn::Result<ParsedFloat> {
+/// `5f32` / `-5f32` 防御分支：整数 token + 浮点后缀时按浮点解析。
+fn parse_float_from_int_token(n: &syn::LitInt, neg: bool) -> syn::Result<ParsedFloat> {
     let ty =
         FloatTy::from_suffix(n.suffix()).ok_or_else(|| float_suffix_err(n.span(), n.suffix()))?;
     // 整数形态无小数点/指数，按对应浮点重解析其十进制数字。
     let digits = n.base10_digits();
     match ty {
         FloatTy::F32 => {
-            let v: f32 = digits
-                .parse()
-                .map_err(|e| syn::Error::new(n.span(), format!("浮点字面量解析失败：{e}")))?;
-            finish_float!(v, n.span(), ty)
-        }
-        FloatTy::F64 => {
-            let v: f64 = digits
-                .parse()
-                .map_err(|e| syn::Error::new(n.span(), format!("浮点字面量解析失败：{e}")))?;
-            finish_float!(v, n.span(), ty)
-        }
-    }
-}
-
-/// `5f32` 取负分支：直接解析绝对值再取负编码，避免正浮点→字节→浮点的往返转换。
-fn parse_float_from_neg_int_token(n: &syn::LitInt) -> syn::Result<ParsedFloat> {
-    let ty =
-        FloatTy::from_suffix(n.suffix()).ok_or_else(|| float_suffix_err(n.span(), n.suffix()))?;
-    let digits = n.base10_digits();
-    match ty {
-        FloatTy::F32 => {
             let mag: f32 = digits
                 .parse()
                 .map_err(|e| syn::Error::new(n.span(), format!("浮点字面量解析失败：{e}")))?;
-            finish_float!(-mag, n.span(), ty)
+            finish_float!(if neg { -mag } else { mag }, n.span(), ty)
         }
         FloatTy::F64 => {
             let mag: f64 = digits
                 .parse()
                 .map_err(|e| syn::Error::new(n.span(), format!("浮点字面量解析失败：{e}")))?;
-            finish_float!(-mag, n.span(), ty)
+            finish_float!(if neg { -mag } else { mag }, n.span(), ty)
         }
     }
 }
@@ -404,7 +338,7 @@ fn parse_float_from_neg_int_token(n: &syn::LitInt) -> syn::Result<ParsedFloat> {
 /// （宏会追加唯一的结尾 NUL，故任何输入 NUL 都是内部 NUL）。
 pub(crate) fn parse_cstr(input: TokenStream2) -> syn::Result<Vec<u8>> {
     let expr: syn::Expr = syn::parse2(input)?;
-    let (payload, span) = match expr {
+    let (payload, span) = match unwrap_group(expr) {
         syn::Expr::Lit(syn::ExprLit {
             lit: syn::Lit::Str(lit),
             ..
@@ -433,43 +367,136 @@ pub(crate) fn parse_cstr(input: TokenStream2) -> syn::Result<Vec<u8>> {
     Ok(payload)
 }
 
+/// 解析后的宽字符串：UTF-16 码元序列（不含自动追加的结尾 NUL）。
+pub(crate) struct ParsedWide {
+    pub(crate) units: Vec<u16>,
+}
+
+/// 解析后的宽 C 字符串：UTF-16 码元序列（已含唯一结尾 `0`）。
+pub(crate) struct ParsedCWide {
+    pub(crate) units: Vec<u16>,
+}
+
+/// 解析 `wN!` 输入：只接受字符串字面量 `"..."`，按 UTF-16 展开，不追加结尾 `0u16`。
+///
+/// 与 `cwN!` 不同：不限制内部 NUL（`U+0000` 作为普通码元保留），也不自动追加
+/// 结尾 NUL；`N` 即码元数，空串 `N = 0`。
+pub(crate) fn parse_wstr(input: TokenStream2) -> syn::Result<ParsedWide> {
+    let (_lit, units) = parse_wide_literal(input, "wN!")?;
+    Ok(ParsedWide { units })
+}
+
+/// 解析 `cwN!` 输入：只接受字符串字面量 `"..."`，按 UTF-16 展开后追加结尾 `0u16`。
+///
+/// 载荷中任何位置出现 `U+0000` 即报错并给出码元下标（宏会追加唯一的结尾 NUL，
+/// 故任何输入 NUL 都是内部 NUL），与 `csN!` 的 NUL 语义一致。
+pub(crate) fn parse_cwstr(input: TokenStream2) -> syn::Result<ParsedCWide> {
+    let (lit, mut units) = parse_wide_literal(input, "cwN!")?;
+    if let Some(pos) = units.iter().position(|&u| u == 0) {
+        return Err(syn::Error::new(
+            lit.span(),
+            format!("宽 C 字符串载荷不能包含内部 NUL（码元下标 {pos}）"),
+        ));
+    }
+    units.push(0);
+    Ok(ParsedCWide { units })
+}
+
+/// 宽字符串字面量解析与 UTF-16 编码的共用逻辑；`macro_name` 仅用于错误信息。
+fn parse_wide_literal(
+    input: TokenStream2,
+    macro_name: &str,
+) -> syn::Result<(syn::LitStr, Vec<u16>)> {
+    let expr: syn::Expr = syn::parse2(input)?;
+    let lit = match unwrap_group(expr) {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(lit),
+            ..
+        }) => lit,
+        other => {
+            return Err(syn::Error::new_spanned(
+                &other,
+                format!("{macro_name} 只接受字符串字面量（如 \"hi\"、\"你好\"），不支持表达式"),
+            ));
+        }
+    };
+    let units: Vec<u16> = lit.value().encode_utf16().collect();
+    Ok((lit, units))
+}
+
+/// 解开 `macro_rules!` 元变量（`:literal` / `:expr`）转发产生的不可见 `None` 分组。
+///
+/// `syn::Expr` 为保留表达式优先级会把它保留为 `Expr::Group`；所有基于 `Expr`
+/// 的解析入口（`iN!` / `flN!` / `csN!` / `bN!` / `wN!` / `cwN!`）都必须先解包，
+/// 否则用户把宏再包一层 `macro_rules!` 时会误报“不支持表达式”。
+fn unwrap_group(expr: syn::Expr) -> syn::Expr {
+    let mut expr = expr;
+    loop {
+        match expr {
+            syn::Expr::Group(group) => expr = *group.expr,
+            other => return other,
+        }
+    }
+}
+
+/// `unwrap_group` 的引用版本，供数组元素等只需借用、不宜 clone 的场景使用。
+fn unwrap_group_ref(mut expr: &syn::Expr) -> &syn::Expr {
+    loop {
+        match expr {
+            syn::Expr::Group(group) => expr = &*group.expr,
+            other => return other,
+        }
+    }
+}
+
 /// 解析 `sN!` 输入：只接受字符串字面量 `"..."`。
 pub(crate) fn parse_str(input: TokenStream2) -> syn::Result<String> {
+    // `LitStr` 属于底层 Token 解析，`syn` 游标会自动穿透 `Delimiter::None`
+    // 隐式分组，因此无需像 `syn::Expr` 入口那样显式 `unwrap_group`。
     syn::parse2::<syn::LitStr>(input).map(|lit| lit.value())
 }
 
 /// 解析 `bN!` 输入：`b"..."` 字节串或 `[0x41, 66, ...]` 数组（元素须为 0..=255 的整数字面量）。
 pub(crate) fn parse_bytes(input: TokenStream2) -> syn::Result<Vec<u8>> {
-    // 1. b"..." 字节串形式
-    if let Ok(lit) = syn::parse2::<syn::LitByteStr>(input.clone()) {
-        return Ok(lit.value());
-    }
-    // 2. [0x41, 66, ...] 字节数组形式
-    let arr: syn::ExprArray = syn::parse2(input)?;
-    let mut bytes = Vec::with_capacity(arr.elems.len());
-    for elem in &arr.elems {
-        match elem {
-            syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Int(n),
-                ..
-            }) => match n.base10_parse::<u8>() {
-                Ok(b) => bytes.push(b),
-                Err(_) => {
-                    return Err(syn::Error::new_spanned(
-                        n,
-                        "字节数组元素必须在 0..=255 范围内",
-                    ));
+    let expr: syn::Expr = syn::parse2(input)?;
+    match unwrap_group(expr) {
+        // 1. b"..." 字节串形式
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::ByteStr(lit),
+            ..
+        }) => Ok(lit.value()),
+        // 2. [0x41, 66, ...] 字节数组形式
+        syn::Expr::Array(arr) => {
+            let mut bytes = Vec::with_capacity(arr.elems.len());
+            for elem in &arr.elems {
+                match unwrap_group_ref(elem) {
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Int(n),
+                        ..
+                    }) => match n.base10_parse::<u8>() {
+                        Ok(b) => bytes.push(b),
+                        Err(_) => {
+                            return Err(syn::Error::new_spanned(
+                                n,
+                                "字节数组元素必须在 0..=255 范围内",
+                            ));
+                        }
+                    },
+                    other => {
+                        return Err(syn::Error::new_spanned(
+                            other,
+                            "字节数组只接受 0..=255 的整数字面量",
+                        ));
+                    }
                 }
-            },
-            other => {
-                return Err(syn::Error::new_spanned(
-                    other,
-                    "字节数组只接受 0..=255 的整数字面量",
-                ));
             }
+            Ok(bytes)
         }
+        other => Err(syn::Error::new_spanned(
+            &other,
+            "bN! 只接受字节串字面量 b\"...\" 或字节数组 [0x41, 66, ...]，不支持表达式",
+        )),
     }
-    Ok(bytes)
 }
 
 /// 解析 `fN!` 输入：路径字面量相对被编译 crate 的 `CARGO_MANIFEST_DIR` 读入文件

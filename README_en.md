@@ -1,6 +1,6 @@
 # obfstr2
 
-> **Polymorphic compile-time string/bytes/int/float/cstr/file obfuscation**
+> **Polymorphic compile-time string/wide-str/wide-cstr/bytes/int/float/cstr/file obfuscation**
 
 [![Crates.io](https://img.shields.io/crates/v/obfstr2?logo=rust)](https://crates.io/crates/obfstr2)
 [![Docs.rs](https://img.shields.io/docsrs/obfstr2?logo=docs.rs)](https://docs.rs/obfstr2)
@@ -13,7 +13,7 @@
 
 A drop-in, one-line macro framework for compile-time security obfuscation in Rust: literal in, secure expression out, with all encryption and data transformation completed at compile time. Every build generates completely different binary signatures and ciphertext forms, thoroughly defeating signature-based static scanning and batch reverse-engineering scripts.
 
-Comprehensive coverage across seven payload types: native strings, byte arrays, external static files, scalar integers, floating-point numbers, C-style strings (`CStr`), and format strings. Supports dereferencing directly to raw values or storing in controlled secure containers; string and byte containers perform volatile memory zeroing upon going out of scope (`Drop`) to prevent sensitive plaintext from lingering in stack or heap memory.
+Comprehensive coverage across nine payload types: native strings, UTF-16 wide strings, UTF-16 wide C strings, byte arrays, external static files, scalar integers, floating-point numbers, C-style strings (`CStr`), and format strings. Supports dereferencing directly to raw values or storing in controlled secure containers; string and byte containers perform volatile memory zeroing upon going out of scope (`Drop`) to prevent sensitive plaintext from lingering in stack or heap memory.
 
 ## Table of Contents
 
@@ -37,7 +37,7 @@ obfstr2 = "0.3"
 ```
 
 ```rust
-use obfstr2::{b2, cs2, f2, fl2, i2, s2, s_fmt2};
+use obfstr2::{b2, cs2, cw2, f2, fl2, i2, s2, s_fmt2, w1};
 
 fn main() {
     // String: evaluates to plaintext, returns an owned container that can be bound, passed, and reused
@@ -46,6 +46,12 @@ fn main() {
     // C-string: evaluates to plaintext, dereferences to `CStr`, `as_ptr()` is ready for syscalls/FFI
     let sh = cs2!(c"/bin/sh");
     assert_eq!(&*sh, c"/bin/sh");
+    // Wide C-string: UTF-16 code units + automatic trailing 0u16; as_ptr() is ready for Win32 PCWSTR
+    let w = cw2!("kernel32.dll");
+    assert_eq!(w[w.len() - 1], 0);
+    // Wide string: UTF-16 code units, no trailing NUL, internal NUL allowed
+    let ws = w1!("a\0b");
+    assert_eq!(&*ws, &[0x61u16, 0, 0x62][..]);
     // Byte string / byte array: dereferences to plaintext `[u8]`
     let b = b2!(b"abc");
     let c = b2!([0x61, 98, 99]);
@@ -110,6 +116,8 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 | `i1!` / `i2!` / `i3!`             | `42u8` / `-1` / `0xFFu16` etc. integer literals (unsuffixed defaults to `i32`)               | Low latency / Balanced / High strength                                                                                                                                                        |
 | `fl1!` / `fl2!` / `fl3!`          | `3.15f32` / `-1.0` / `1e10` etc. float literals (unsuffixed defaults to `f64`)               | Low latency / Balanced / High strength                                                                                                                                                        |
 | `cs1!` / `cs2!` / `cs3!`          | `"..."` / `c"..."` / `b"..."` (`b"..."` may contain non-UTF-8 bytes; internal NUL forbidden) | Low latency / Balanced / High strength                                                                                                                                                        |
+| `w1!` / `w2!` / `w3!`             | `"..."` string literal (UTF-16, no trailing NUL, internal NUL allowed)                        | Low latency / Balanced / High strength                                                                                                                                                        |
+| `cw1!` / `cw2!` / `cw3!`          | `"..."` string literal (UTF-16, appends a trailing `0u16`, internal NUL forbidden)            | Low latency / Balanced / High strength                                                                                                                                                        |
 | `f1!` / `f2!` / `f3!`             | `"path/to/file"` file path literal                                                           | Low latency / Balanced / High strength                                                                                                                                                        |
 | `s_fmt1!` / `s_fmt2!` / `s_fmt3!` | `"...{}..."` format string + args                                                            | Obfuscates literal segments by level then passes to `format!`, returning `String` (requires `alloc`, `no_std` compatible; level `2`/`3` segments may use `Heap*`, requiring default features) |
 
@@ -118,6 +126,8 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 - String macros → `StackStr<N>` / `HeapStr<N>`
 - Byte / File macros → `StackBytes<N>` / `HeapBytes<N>`
 - C-string macros → `StackCStr<N>` / `HeapCStr<N>` (`N` includes trailing `\0`, `N >= 1`; dereferences to `core::ffi::CStr`, auto-zeroed on `Drop`)
+- Wide string macros → `StackU16<N>` / `HeapU16<N>` (`N` is the number of UTF-16 code units, excluding the terminator; internal NUL allowed; `Deref<Target = [u16]>`, auto-zeroed on `Drop`)
+- Wide C-string macros → `StackU16<N>` / `HeapU16<N>` (`N` is the number of UTF-16 code units, including the trailing `0u16`; `Deref<Target = [u16]>`, `as_ptr()` is ready for `PCWSTR`, auto-zeroed on `Drop`)
 - Integer macros expand to raw integer values (`u8`/`i8`/`u16`/`i16`/`u32`/`i32`/`u64`/`i64`/`u128`/`i128`/`usize`/`isize`, determined by the literal suffix)
 - Float macros expand to raw floating-point values (`f32` / `f64`, determined by the literal suffix)
 
@@ -135,6 +145,21 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 - Also reuse the byte-obfuscation core: the payload is appended with a trailing `\0` and obfuscated as a whole, then reconstructed at runtime via `try_from(&mut [u8])` (truncating at the first NUL + zeroing the decrypted source buffer).
 - All three literal forms are semantically equivalent; use `b"..."` for non-UTF-8 payloads.
 - Any internal NUL byte in the payload triggers a compile-time error.
+
+**Wide String Macros (No NUL)**
+
+- Accept only `"..."` string literals; the payload is encoded to UTF-16 code units at compile time. **No trailing `0u16` is appended**, and **internal NUL is allowed** (`U+0000` is preserved as a regular code unit).
+- Return `StackU16<N>` / `HeapU16<N>`, where `N` is the number of code units (an empty string yields `N = 0`). `Deref<Target = [u16]>`; auto-zeroed on `Drop`.
+- The result is not guaranteed to be NUL-terminated; it fits length-delimited / length-prefixed APIs. Use `cwN!` when a NUL-terminated Win32 `PCWSTR` is required.
+- `w1!` is always pure-stack; `w2!` / `w3!` choose between `StackU16` / `HeapU16` based on the security level and `alloc`.
+
+**Wide C-String Macros**
+
+- Accept only `"..."` string literals; the payload is encoded to UTF-16 code units at compile time, with exactly one trailing `0u16` appended. Any `U+0000` in the payload triggers a compile-time error (prevents truncation).
+- Return `StackU16<N>` / `HeapU16<N>`, where `N` includes the trailing `0u16` (an empty string yields `N = 1`). `Deref<Target = [u16]>` and `as_ptr()` are ready for Win32 `PCWSTR` parameters such as `LoadLibraryW` / `GetModuleHandleW`.
+- Non-BMP characters occupy two code units as a UTF-16 surrogate pair; `String::from_utf16(&w[..w.len() - 1])` reconstructs the text (exclude the trailing `0u16`).
+- Use `wN!` for wide strings without a trailing NUL or with internal NUL data.
+- `cw1!` is always pure-stack; `cw2!` / `cw3!` choose between `StackU16` / `HeapU16` based on the security level and `alloc`.
 
 ## When to Use vs. When Not to Use
 
@@ -156,7 +181,7 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 
 Notes:
 
-- Disabling default features switches to pure-stack mode: Level 1 macros (`s1` / `b1` / `i1` / `fl1` / `cs1` / `f1`) are always pure-stack and unaffected. If the peak intermediate chunk container exceeds 2048B without heap support enabled, a compile-time error will be emitted.
+- Disabling default features switches to pure-stack mode: Level 1 macros (`s1` / `b1` / `i1` / `fl1` / `cs1` / `w1` / `cw1` / `f1`) are always pure-stack and unaffected. If the peak intermediate chunk container exceeds 2048B without heap support enabled, a compile-time error will be emitted.
 - `s_fmt1!` / `s_fmt2!` / `s_fmt3!` expand to `alloc::format!` and return `String`, requiring `alloc` downstream (`no_std` compatible), regardless of pure-stack settings.
 - Runtime fixedly depends on `crypto` / `types` / `encoding` from `lib-unknown`; `encoding` is used for Hex / Base64 decoding in expanded code and cannot be opted out.
 
@@ -217,6 +242,7 @@ Parameter Notes:
 > **Disclaimer:** This project is intended strictly for legitimate and compliant use cases such as software security protection, anti-reverse-engineering research, and firmware code protection. Using it for malware development or unauthorized penetration testing is strictly prohibited.
 
 - **Unsafe Code**: Expanded code contains `unwrap_unchecked` (length invariants are verified at macro-expansion time, incurring zero runtime check overhead); container `Drop` implementations zero out plaintext memory via volatile writes.
+- Wide string / wide C-string containers (`StackU16` / `HeapU16`) also perform volatile zeroing on `Drop`; no plaintext UTF-16 payload appears in the expanded code.
 - If you discover a security vulnerability, please open an Issue directly (this repository currently does not have a private reporting channel).
 
 ## Contributing

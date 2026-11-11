@@ -45,6 +45,15 @@ fn bytes_array_non_literal_rejected() {
 }
 
 #[test]
+fn bytes_string_literal_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _b = obfstr2::b2!("hi"); }"#,
+        "只接受字节串字面量",
+        "b2-str",
+    );
+}
+
+#[test]
 fn missing_file_rejected() {
     assert_compile_fail(
         r#"fn main() { let _b = obfstr2::f2!("不存在的文件.bin"); }"#,
@@ -140,6 +149,51 @@ fn cstr_non_literal_rejected() {
         r#"fn main() { let e = "x"; let _s = obfstr2::cs2!(e); }"#,
         "只接受字符串",
         "cs2-lit",
+    );
+}
+
+#[test]
+fn cwstr_interior_nul_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _s = obfstr2::cw2!("a\0b"); }"#,
+        "内部 NUL",
+        "cw2-nul",
+    );
+}
+
+#[test]
+fn cwstr_non_literal_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _s = obfstr2::cw2!(concat!("a", "b")); }"#,
+        "只接受字符串字面量",
+        "cw2-lit",
+    );
+}
+
+#[test]
+fn cwstr_byte_str_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _s = obfstr2::cw2!(b"hi"); }"#,
+        "只接受字符串字面量",
+        "cw2-bytes",
+    );
+}
+
+#[test]
+fn wstr_non_literal_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _s = obfstr2::w2!(concat!("a", "b")); }"#,
+        "只接受字符串字面量",
+        "w2-lit",
+    );
+}
+
+#[test]
+fn wstr_byte_str_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _s = obfstr2::w2!(b"hi"); }"#,
+        "只接受字符串字面量",
+        "w2-bytes",
     );
 }
 

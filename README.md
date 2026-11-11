@@ -1,6 +1,6 @@
 # obfstr2
 
-> **Polymorphic compile-time string/bytes/int/float/cstr/file obfuscation**
+> **Polymorphic compile-time string/wide-str/wide-cstr/bytes/int/float/cstr/file obfuscation**
 
 [![Crates.io](https://img.shields.io/crates/v/obfstr2?logo=rust)](https://crates.io/crates/obfstr2)
 [![Docs.rs](https://img.shields.io/docsrs/obfstr2?logo=docs.rs)](https://docs.rs/obfstr2)
@@ -13,7 +13,7 @@
 
 一行宏即用的 Rust 编译期安全混淆框架：字面量输入，安全表达式输出，所有加密与数据形变在编译期阶段完成。每次编译均生成完全不同的二进制特征与密文形态，彻底挫败基于特征匹配的静态扫描与批量逆向脚本。
 
-全面覆盖原生字符串、字节数组、外部静态文件、标量整数、浮点数、C 风格字符串（CStr）以及格式化字符串七类载荷。支持解引用直取裸值或转入受控安全容器；字符串与字节类容器在离开作用域（`Drop`）时执行 Volatile 内存擦除，防止敏感明文残留在栈或堆内存中。
+全面覆盖原生字符串、UTF-16 宽字符串、UTF-16 宽 C 字符串、字节数组、外部静态文件、标量整数、浮点数、C 风格字符串（CStr）以及格式化字符串九类载荷。支持解引用直取裸值或转入受控安全容器；字符串与字节类容器在离开作用域（`Drop`）时执行 Volatile 内存擦除，防止敏感明文残留在栈或堆内存中。
 
 ## 目录
 
@@ -37,7 +37,7 @@ obfstr2 = "0.3"
 ```
 
 ```rust
-use obfstr2::{b2, cs2, f2, fl2, i2, s2, s_fmt2};
+use obfstr2::{b2, cs2, cw2, f2, fl2, i2, s2, s_fmt2, w1};
 
 fn main() {
     // 字符串：求值即得原文，返回自有容器，可绑定、传递、复用
@@ -46,6 +46,12 @@ fn main() {
     // C 字符串：求值即得原文，解引用即 `CStr`，`as_ptr()` 可直投系统调用
     let sh = cs2!(c"/bin/sh");
     assert_eq!(&*sh, c"/bin/sh");
+    // 宽 C 字符串：UTF-16 码元 + 自动结尾 0u16，as_ptr() 可直接用于 Win32 PCWSTR
+    let w = cw2!("kernel32.dll");
+    assert_eq!(w[w.len() - 1], 0);
+    // 宽字符串：UTF-16 码元，不追加 NUL、允许内部 NUL
+    let ws = w1!("a\0b");
+    assert_eq!(&*ws, &[0x61u16, 0, 0x62][..]);
     // 字节串 / 字节数组：解引用即得原文 `[u8]`
     let b = b2!(b"abc");
     let c = b2!([0x61, 98, 99]);
@@ -114,6 +120,8 @@ fn main() {
 | `i1!` / `i2!` / `i3!`                 | `42u8` / `-1` / `0xFFu16` 等整数字面量（空后缀视为 `i32`）                  | 低延迟 / 均衡 / 高强度                                                                                                             |
 | `fl1!` / `fl2!` / `fl3!`              | `3.15f32` / `-1.0` / `1e10` 等浮点字面量（空后缀视为 `f64`）                | 低延迟 / 均衡 / 高强度                                                                                                             |
 | `cs1!` / `cs2!` / `cs3!`              | `"..."` / `c"..."` / `b"..."`（`b"..."` 可含非 UTF-8 字节，载荷禁内部 NUL） | 低延迟 / 均衡 / 高强度                                                                                                             |
+| `w1!` / `w2!` / `w3!`                 | `"..."` 字符串字面量（UTF-16，不追加 NUL，允许内部 NUL）                     | 低延迟 / 均衡 / 高强度                                                                                                             |
+| `cw1!` / `cw2!` / `cw3!`              | `"..."` 字符串字面量（UTF-16，自动追加结尾 `0u16`，载荷禁内部 NUL）          | 低延迟 / 均衡 / 高强度                                                                                                             |
 | `f1!` / `f2!` / `f3!`                 | `"path/to/file"` 文件路径字面量                                             | 低延迟 / 均衡 / 高强度                                                                                                             |
 | `s_fmt1!` / `s_fmt2!` / `s_fmt3!`     | `"...{}..."` 格式串 + 参数                                                  | 字面量片段按档位混淆后走 `format!`，返回 `String`（需 `alloc`，`no_std` 可用；`2` / `3` 档的字面量片段可能走 `Heap*`，需默认特性） |
 
@@ -123,6 +131,8 @@ fn main() {
 - 字符串宏 → `StackStr<N>` / `HeapStr<N>`
 - 字节 / 文件宏 → `StackBytes<N>` / `HeapBytes<N>`
 - C 字符串宏 → `StackCStr<N>` / `HeapCStr<N>`（`N` 含结尾 `\0`，`N >= 1`；解引用为 `core::ffi::CStr`，`Drop` 自动清零）
+- 宽字符串宏 → `StackU16<N>` / `HeapU16<N>`（`N` 为 UTF-16 码元数，不含结尾；允许内部 NUL；`Deref<Target = [u16]>`，`Drop` 自动清零）
+- 宽 C 字符串宏 → `StackU16<N>` / `HeapU16<N>`（`N` 为 UTF-16 码元数，含结尾 `0u16`；`Deref<Target = [u16]>`，`as_ptr()` 可直接用于 `PCWSTR`，`Drop` 自动清零）
 - 整数宏展开为裸整数值（`u8`/`i8`/`u16`/`i16`/`u32`/`i32`/`u64`/`i64`/`u128`/`i128`/`usize`/`isize`，由字面量后缀决定）
 - 浮点宏展开为裸浮点值（`f32` / `f64`，由字面量后缀决定）
 
@@ -140,6 +150,22 @@ fn main() {
 - 同样复用字节混淆内核：载荷追加结尾 `\0` 后整体混淆，运行时经 `try_from(&mut [u8])` 还原（首 NUL 截断 + 解密源擦除）；
 - 三种字面量形态语义等价，非 UTF-8 载荷请用 `b"..."`；
 - 载荷含任何内部 NUL 即编译期报错。
+
+**宽字符串宏（无 NUL）**
+
+- 只接受 `"..."` 字符串字面量，编译期经 `encode_utf16` 转为 UTF-16 码元；**不追加**结尾 `0u16`，且 **不限制内部 NUL**（`U+0000` 作为普通码元保留）；
+- 返回 `StackU16<N>` / `HeapU16<N>`，`N` 即码元数（空串 `N = 0`）；`Deref<Target = [u16]>`，`Drop` 自动清零；
+- 返回值不保证以 NUL 结尾，适用于显式长度 / 长度前缀 API；需要 NUL 结尾的 Win32 `PCWSTR` 请使用 `cwN!`；
+- `w1!` 恒纯栈；`w2!` / `w3!` 按档位与 `alloc` 在 `StackU16` / `HeapU16` 间选择。
+
+**宽 C 字符串宏**
+
+- 只接受 `"..."` 字符串字面量，编译期经 `encode_utf16` 转为 UTF-16 码元，自动追加唯一结尾 `0u16`；载荷含任何 `U+0000` 即编译期报错（防截断）；
+- 返回 `StackU16<N>` / `HeapU16<N>`，`N` 含结尾 `0u16`（空串即 `N = 1`）；`Deref<Target = [u16]>`，`as_ptr()` 可直接传给 `LoadLibraryW` / `GetModuleHandleW` 等 Win32 `PCWSTR` 参数；
+- 非 BMP 字符按 UTF-16 代理对占 2 个码元；`String::from_utf16(&w[..w.len() - 1])` 可还原文本（末尾 `0u16` 需自行排除）；
+- 需要无结尾 NUL / 允许内部 NUL 的宽字符串请使用 `wN!`；
+- `cw1!` 恒纯栈；`cw2!` / `cw3!` 按档位与 `alloc` 在 `StackU16` / `HeapU16` 间选择。
+
 ## 适用场景 vs 不适用场景
 
 **适合：**
@@ -160,7 +186,7 @@ fn main() {
 
 注意：
 
-- 关闭后为纯栈：1 档（`s1` / `b1` / `i1` / `fl1` / `cs1` / `f1`）恒纯栈、无影响；chunk 中间容器峰值超 2048B 且无堆可用时为编译期报错。
+- 关闭后为纯栈：1 档（`s1` / `b1` / `i1` / `fl1` / `cs1` / `w1` / `cw1` / `f1`）恒纯栈、无影响；chunk 中间容器峰值超 2048B 且无堆可用时为编译期报错。
 - `s_fmt1!` / `s_fmt2!` / `s_fmt3!` 展开为 `alloc::format!` 并返回 `String`，下游需 `alloc`（`no_std` 可用），与纯栈组合无关。
 - 运行时固定依赖 `lib-unknown` 的 `crypto` / `types` / `encoding`；`encoding` 用于展开代码的 Hex / Base64 解码，不可裁剪。
 
@@ -223,6 +249,7 @@ obfstr2 = { version = "0.3", default-features = false }
 > 免责声明：本项目仅供软件安全防护、防逆向工程研究、固件代码保护等合法合规场景使用，严禁用于任何恶意软件制作或非法渗透测试。
 
 - Unsafe 代码：展开代码含 `unwrap_unchecked`（长度不变量已在展开期验证，运行时无校验开销）；容器 `Drop` 经 volatile 写清零明文。
+- 宽字符串 / 宽 C 字符串容器（`StackU16` / `HeapU16`）同样在 `Drop` 时执行 volatile 擦除，展开代码中不出现明文 UTF-16 载荷。
 - 如发现安全漏洞，请直接提交 Issue 说明（本仓库暂无私有上报通道）。
 
 

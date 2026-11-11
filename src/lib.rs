@@ -463,3 +463,136 @@ macro_rules! cs3 {
         ::obfstr2::obfstr2_macros::cs3!($($tt)*)
     };
 }
+
+/// 宽 C 字符串混淆宏（低延迟档）。
+///
+/// 只接受字符串字面量 `"..."`，编译期经 `encode_utf16` 展开为 UTF-16 码元，
+/// 自动追加唯一结尾 `0u16`；载荷不能包含内部 NUL（`U+0000`）。
+/// 展开为求值即得原文的宽字符容器表达式（`StackU16<N>`，`N` 为码元数且含结尾
+/// `0u16`，请使用类型推断），`Deref<Target = [u16]>`，`as_ptr()` 可直接传给
+/// `LoadLibraryW` / `GetModuleHandleW` 等 Win32 `PCWSTR` 参数，`Drop` 时自动清零。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::cw1;
+///
+/// let w = cw1!("hello");
+/// assert_eq!(&w[..w.len() - 1], "hello".encode_utf16().collect::<Vec<_>>().as_slice());
+/// assert_eq!(w[w.len() - 1], 0);
+/// ```
+#[macro_export]
+macro_rules! cw1 {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::cw1!($($tt)*)
+    };
+}
+
+/// 宽 C 字符串混淆宏（均衡档）。
+///
+/// 输入与展开规则同 [`cw1`](cw1!())；返回的具体容器类型（`StackU16` /
+/// `HeapU16`）同一宏名下可能随编译变化，请使用类型推断。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::cw2;
+///
+/// let w = cw2!("你好🦀");
+/// let text = String::from_utf16(&w[..w.len() - 1]).unwrap();
+/// assert_eq!(text, "你好🦀");
+/// assert_eq!(w[w.len() - 1], 0);
+/// ```
+#[macro_export]
+macro_rules! cw2 {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::cw2!($($tt)*)
+    };
+}
+
+/// 宽 C 字符串混淆宏（高强度档）。
+///
+/// 输入与展开规则同 [`cw1`](cw1!())；启用 `alloc` 时主容器走 `HeapU16`。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::cw3;
+///
+/// let w = cw3!("kernel32.dll");
+/// assert_eq!(&w[..w.len() - 1], "kernel32.dll".encode_utf16().collect::<Vec<_>>().as_slice());
+/// assert_eq!(w[w.len() - 1], 0);
+/// ```
+#[macro_export]
+macro_rules! cw3 {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::cw3!($($tt)*)
+    };
+}
+
+/// 宽字符串混淆宏（低延迟档）。
+///
+/// 只接受字符串字面量 `"..."`，编译期经 `encode_utf16` 展开为 UTF-16 码元，
+/// **不追加**结尾 `0u16`，且 **不限制内部 NUL**（`U+0000` 作为普通码元保留）。
+/// `N` 即码元数，空串为 `N = 0`。
+/// 展开为求值即得原文的宽字符容器表达式（`StackU16<N>`，请使用类型推断），
+/// `Deref<Target = [u16]>`，`Drop` 时自动清零。
+///
+/// 返回值不保证以 NUL 结尾；需要 NUL 结尾的 Win32 `PCWSTR` 请使用
+/// [`cw1`](cw1!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::w1;
+///
+/// let w = w1!("hello");
+/// assert_eq!(&*w, "hello".encode_utf16().collect::<Vec<_>>().as_slice());
+/// assert_eq!(w.len(), 5);
+/// assert!(w1!("").is_empty());
+/// ```
+#[macro_export]
+macro_rules! w1 {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::w1!($($tt)*)
+    };
+}
+
+/// 宽字符串混淆宏（均衡档）。
+///
+/// 输入与展开规则同 [`w1`](w1!())；返回的具体容器类型（`StackU16` /
+/// `HeapU16`）同一宏名下可能随编译变化，请使用类型推断。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::w2;
+///
+/// let w = w2!("a\0b");
+/// assert_eq!(&*w, &[0x61u16, 0, 0x62][..]);
+/// ```
+#[macro_export]
+macro_rules! w2 {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::w2!($($tt)*)
+    };
+}
+
+/// 宽字符串混淆宏（高强度档）。
+///
+/// 输入与展开规则同 [`w1`](w1!())；启用 `alloc` 时主容器走 `HeapU16`。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::w3;
+///
+/// let w = w3!("kernel32.dll");
+/// assert_eq!(&*w, "kernel32.dll".encode_utf16().collect::<Vec<_>>().as_slice());
+/// ```
+#[macro_export]
+macro_rules! w3 {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::w3!($($tt)*)
+    };
+}
