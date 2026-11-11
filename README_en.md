@@ -73,7 +73,7 @@ fn main() {
 
 For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-world application bootstrap configuration: `cargo run --example showcase`).
 
-> **Security Levels:** All obfuscation macros provide three security levels: `1` (low overhead), `2` (balanced, recommended), and `3` (high-strength anti-reversing). The examples above use the recommended level `2` by default.
+> **Security Levels:** All obfuscation macros offer three security levels: 1 (low overhead), 2 (recommended/balanced), and 3 (high-intensity anti-reverse engineering).
 
 ## Design Philosophy
 
@@ -90,7 +90,7 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 
 2. **Abstracted Obfuscation Pipeline** — All algorithms converge into two registries: `Crypto { name / enc / dec / support / security / latency / metrics }` (polymorphic encryption/decryption) and `Storage { ast / support / security / latency }` (polymorphic ciphertext storage). `build_obfuscated_bytes` is solely responsible for orchestrating the *chunk → encrypt → store → emit* pipeline. Adding a new algorithm only requires appending a table entry without modifying the pipeline.
 3. **Compile-Time Evaluation, Minimal Runtime Dependencies** — Procedural macros expand into self-contained TokenStreams. Obfuscation is completed at compile time, while runtime depends only on `types`, `crypto`, and `encoding` from `lib-unknown`. `no_std` compatible. Invariants verified at expansion time use `unwrap_unchecked`, leaving zero runtime validation overhead.
-4. **Symbolic Execution Resistance** — `obfstr2` moves beyond traditional "XOR tricks" by introducing **modern symmetric cryptography design principles (Confusion, Diffusion, SPN networks, Avalanche Effect)** into string obfuscation to counter automated symbolic execution tools like `angr` (see reproduction commands in the [Contributing](#contributing) section).
+4. **Symbolic Execution Resistance** — `obfstr2` moves beyond traditional "simple XOR" by introducing **modern symmetric cryptography design principles (Confusion, Diffusion, SPN networks, Avalanche Effect)** into string obfuscation to counter automated symbolic execution tools like `angr` (see reproduction commands in the [Contributing](#contributing) section).
 
 ### Trade-offs
 
@@ -175,13 +175,23 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 
 ## Feature Flags
 
-| Feature   | Default | Description                                                                                                                                         |
-|:----------|:--------|:----------------------------------------------------------------------------------------------------------------------------------------------------|
-| `default` | ✅      | Enables heap memory support: activates `alloc` for downstream `lib-unknown` and `obfstr2-macros`, allowing expanded code to use `Heap*` containers. |
+| Feature       | Default | Description                                                                                                                                         |
+|:--------------|:--------|:----------------------------------------------------------------------------------------------------------------------------------------------------|
+| `default`     | ✅      | Enables heap memory support: activates `alloc` for downstream `lib-unknown` and `obfstr2-macros`, allowing expanded code to use `Heap*` containers. |
+| `budget-1k`   |         | Stack budget control: sets the pure-stack limit `STACK_BUDGET` to 1 KiB.                                                                            |
+| `budget-4k`   |         | Stack budget control: sets `STACK_BUDGET` to 4 KiB (the default).                                                                                   |
+| `budget-16k`  |         | Stack budget control: sets `STACK_BUDGET` to 16 KiB.                                                                                                |
+| `budget-64k`  |         | Stack budget control: sets `STACK_BUDGET` to 64 KiB.                                                                                                |
+| `budget-256k` |         | Stack budget control: sets `STACK_BUDGET` to 256 KiB.                                                                                               |
+| `budget-512k` |         | Stack budget control: sets `STACK_BUDGET` to 512 KiB.                                                                                               |
+| `budget-1m`   |         | Stack budget control: sets `STACK_BUDGET` to 1 MiB.                                                                                                 |
+| `budget-4m`   |         | Stack budget control: sets `STACK_BUDGET` to 4 MiB.                                                                                                 |
+| `budget-8m`   |         | Stack budget control: sets `STACK_BUDGET` to 8 MiB.                                                                                                 |
 
 Notes:
 
-- Disabling default features switches to pure-stack mode: Level 1 macros (`s1` / `b1` / `i1` / `fl1` / `cs1` / `w1` / `cw1` / `f1`) are always pure-stack and unaffected. If the peak intermediate chunk container exceeds 2048B without heap support enabled, a compile-time error will be emitted.
+- Disabling default features switches to pure-stack mode: Level 1 macros (`s1` / `b1` / `i1` / `fl1` / `cs1` / `w1` / `cw1` / `f1`) are always pure-stack and unaffected. If the peak intermediate chunk container exceeds `STACK_BUDGET`/2 (2048B under the default 4 KiB) without heap support enabled, a compile-time error will be emitted.
+- `budget-*` features combine freely: when multiple are enabled, the largest takes effect; if none is specified, `STACK_BUDGET` defaults to 4 KiB.
 - `s_fmt1!` / `s_fmt2!` / `s_fmt3!` expand to `alloc::format!` and return `String`, requiring `alloc` downstream (`no_std` compatible), regardless of pure-stack settings.
 - Runtime fixedly depends on `crypto` / `types` / `encoding` from `lib-unknown`; `encoding` is used for Hex / Base64 decoding in expanded code and cannot be opted out.
 
@@ -231,11 +241,11 @@ Parameter Notes:
 
 | Case               | Time / Deobf | Total Runtime (512 loops, incl. startup) | Incremental Build   | Cold Build           | Binary Size (unstripped) | Expand Chars    |
 |:-------------------|:-------------|:-----------------------------------------|:--------------------|:---------------------|:-------------------------|:----------------|
-| Plaintext Baseline | —            | 10.285437ms                              | 171.769429ms        | 433.035579ms         | 445032                   | 1437            |
-| CasualX obfbytes!  | 0.04µs       | 10.303865ms (0%)                         | 202.531839ms (18%)  | 2.691593563s (522%)  | 448064 (1%)              | 7780 (441%)     |
-| obfstr2 b1!        | 0.29µs       | 10.433189ms (1%)                         | 817.921917ms (376%) | 6.882235144s (1489%) | 506128 (14%)             | 72695 (4959%)   |
-| obfstr2 b2!        | 295.98µs     | 161.827931ms (1473%)                     | 1.250216479s (628%) | 7.785976764s (1698%) | 577728 (30%)             | 171635 (11844%) |
-| obfstr2 b3!        | 934.00µs     | 488.495427ms (4649%)                     | 2.72362967s (1486%) | 7.952317559s (1736%) | 822744 (85%)             | 449291 (31166%) |
+| Plaintext Baseline | —            | 10.365382ms                              | 171.992052ms        | 414.602076ms         | 445040                   | 1437            |
+| CasualX obfbytes!  | -0.10µs      | 10.313586ms (-0%)                        | 211.984155ms (23%)  | 1.546629633s (273%)  | 448072 (1%)              | 7780 (441%)     |
+| obfstr2 b1!        | 19.57µs      | 20.383619ms (97%)                        | 686.693935ms (299%) | 5.199780109s (1154%) | 519688 (17%)             | 104605 (7179%)  |
+| obfstr2 b2!        | 295.99µs     | 161.912404ms (1462%)                     | 1.619466966s (842%) | 5.734792802s (1283%) | 640912 (44%)             | 284900 (19726%) |
+| obfstr2 b3!        | 926.98µs     | 484.979339ms (4579%)                     | 4.180500072s (2331%)| 7.775605694s (1775%) | 846864 (90%)             | 637097 (44235%) |
 
 ## Security
 

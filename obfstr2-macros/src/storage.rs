@@ -198,7 +198,7 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                     }
                     buf[..chunk.len()].copy_from_slice(chunk);
                     let mac_str = format!(
-                        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
+                        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\0",
                         buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]
                     );
                     macs.push(mac_str);
@@ -210,7 +210,7 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                     #decode
                 }
             },
-            support: |size| (8..=256).contains(&size),
+            support: |size| (6..=386).contains(&size),
             security: 30,
             latency: 10,
         },
@@ -227,7 +227,7 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                     }
                     buf[..chunk.len()].copy_from_slice(chunk);
                     let uuid_str = format!(
-                        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}\n",
+                        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}\0",
                         buf[0],
                         buf[1],
                         buf[2],
@@ -254,7 +254,7 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                     #decode
                 }
             },
-            support: |size| (8..=386).contains(&size),
+            support: |size| (8..=512).contains(&size),
             security: 30,
             latency: 10,
         },
@@ -271,7 +271,7 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                     }
                     buf[..chunk.len()].copy_from_slice(chunk);
                     let ipv6_str = format!(
-                        "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}\n",
+                        "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}\0",
                         buf[0],
                         buf[1],
                         buf[2],
@@ -298,7 +298,7 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                     #decode
                 }
             },
-            support: |size| (8..=386).contains(&size),
+            support: |size| (8..=512).contains(&size),
             security: 30,
             latency: 10,
         },
@@ -395,7 +395,7 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                     }
                 }
             },
-            support: |size| (128..=4096).contains(&size),
+            support: |size| (128..=10240).contains(&size),
             security: 45,
             latency: 12,
         },

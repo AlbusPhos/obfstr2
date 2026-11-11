@@ -10,6 +10,18 @@
 
 ---
 
+## [0.3.3] - 2026-11-11
+
+### Added
+- 栈预算控制 feature：`budget-1k` / `budget-4k` / `budget-16k` / `budget-64k` / `budget-256k` / `budget-512k` / `budget-1m` / `budget-4m` / `budget-8m`，将纯栈上限 `STACK_BUDGET` 分别设为 1 KiB / 4 KiB / 16 KiB / 64 KiB / 256 KiB / 512 KiB / 1 MiB / 4 MiB / 8 MiB（`obfstr2` feature 转发至 `obfstr2-macros`；同时启用多个时取最大档，未指定时默认 4 KiB）
+- 主容器选择：载荷大小达到 `STACK_BUDGET` 且堆可用时改用 `HeapBytes`，避免大载荷压栈；纯栈模式下载荷超过 `STACK_BUDGET` 且无堆可用时给出明确编译期错误
+
+### Changed
+- `STACK_BUDGET` 默认值由 2048B 提升至 4096B；chunk 中间容器走堆阈值同步调整为 `STACK_BUDGET`/2（默认 2048B）
+- 分块曲线调整为 `base = ceil(i^1.4)`、取块范围 `2 × base..8 × base`，块大小分布更宽、混淆粒度更多样
+- 存储策略适用区间调整（`obfstr2-macros/src/storage.rs`）：`mac` 由 `8..=256` 调整为 `6..=386`；`uuid` / `ipv6` 由 `8..=386` 调整为 `8..=512`；`pem` 由 `128..=4096` 调整为 `128..=10240`
+- 文档：README / README_en 特性标志表增加 `budget-*`，纯栈上限说明改为随 `STACK_BUDGET` 联动；性能基准数据更新为最新实测（含 `mac` / `uuid` / `ipv6` / `pem` 区间调整后的 b1 / b2 / b3 数据）
+
 ## [0.3.2] - 2026-11-11
 
 ### Added

@@ -1,6 +1,6 @@
 [package]
 name = "obfstr2-macros"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 resolver = "2"
 rust-version = "1.92"
@@ -29,3 +29,13 @@ lib-unknown = { version = "=0.3.2", default-features = false, features = ["rand"
 [features]
 default = []
 alloc = []
+# 栈预算控制：同时启用多个时取最大档；未指定时默认 4 KiB
+budget-1k = []
+budget-4k = []
+budget-16k = []
+budget-64k = []
+budget-256k = []
+budget-512k = []
+budget-1m = []
+budget-4m = []
+budget-8m = []

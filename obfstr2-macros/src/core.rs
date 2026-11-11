@@ -13,7 +13,32 @@ use lib_unknown::rand::core::{random, random_range, shuffle};
 use proc_macro2::{Ident as Ident2, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
 
-pub(crate) const STACK_BUDGET: usize = 2048;
+/// 纯栈内存预算上限（字节），控制主容器与 chunk 中间容器走栈 / 走堆的阈值。
+///
+/// 由 `budget-*` feature 配置（`budget-1k` / `budget-4k` / `budget-16k` / `budget-64k` /
+/// `budget-256k` / `budget-512k` / `budget-1m` / `budget-4m` / `budget-8m`）：同时启用
+/// 多个时取最大档；未指定时默认 4 KiB。
+pub(crate) const STACK_BUDGET: usize = if cfg!(feature = "budget-8m") {
+    8 * 1024 * 1024
+} else if cfg!(feature = "budget-4m") {
+    4 * 1024 * 1024
+} else if cfg!(feature = "budget-1m") {
+    1024 * 1024
+} else if cfg!(feature = "budget-512k") {
+    512 * 1024
+} else if cfg!(feature = "budget-256k") {
+    256 * 1024
+} else if cfg!(feature = "budget-64k") {
+    64 * 1024
+} else if cfg!(feature = "budget-16k") {
+    16 * 1024
+} else if cfg!(feature = "budget-4k") {
+    4 * 1024
+} else if cfg!(feature = "budget-1k") {
+    1024
+} else {
+    4 * 1024 // 默认值放在最后
+};
 
 /// 强度档位公共参数（延迟上限 / 组合安全度下限 / 原语叠加倍率 / 逐层非内联包装概率 / 短块预填充）。
 #[derive(Clone, Copy)]
@@ -504,8 +529,8 @@ pub(crate) fn build_obfuscated_bytes(
     let mut work_units: Vec<(Vec<u8>, bool)> = Vec::new();
     let mut i = 1;
     while !input.is_empty() {
-        let base = (((i as f64).powf(1.5)).ceil() * 1.3) as usize;
-        let take_size = random_range({ 6 * base }..{ 9 * base }).min(input.len());
+        let base = ((i as f64).powf(1.4)).ceil() as usize;
+        let take_size = random_range({ 2 * base }..{ 8 * base }).min(input.len());
         let real_data: Vec<u8> = input.drain(..take_size).collect();
         let pt_len = real_data.len();
         work_units.push((real_data, false));
@@ -527,9 +552,12 @@ pub(crate) fn build_obfuscated_bytes(
     let bytes = format_ident!("__bytes_{id}");
     let ghost_state = format_ident!("__ghost_state_{id}");
 
-    let use_heap_main = allow_heap && !stack_main_bytes;
-    let main_type_path = if use_heap_main {
+    let main_type_path = if allow_heap && (!stack_main_bytes || size >= STACK_BUDGET) {
         quote!(::obfstr2::types::buffer::HeapBytes)
+    } else if size >= STACK_BUDGET && !allow_heap {
+        return Err(format!(
+            "主容器 需要 {size}B 超过纯栈上限 {STACK_BUDGET}B 且无堆可用"
+        ));
     } else {
         quote!(::obfstr2::types::buffer::StackBytes)
     };
@@ -565,14 +593,15 @@ pub(crate) fn build_obfuscated_bytes(
             .max(pt_len)
             .max(1);
 
-        let use_heap_chunk = if peak > STACK_BUDGET {
+        let use_heap_chunk = if peak > STACK_BUDGET / 2 {
             if allow_heap {
                 true
             } else if is_junk {
                 continue;
             } else {
                 return Err(format!(
-                    "chunk#{seq} 需要 {peak}B 中间容器，超过纯栈上限 {STACK_BUDGET}B 且无堆可用"
+                    "chunk#{seq} 需要 {peak}B 中间容器，超过纯栈上限 {}B 且无堆可用",
+                    STACK_BUDGET / 2
                 ));
             }
         } else if peak <= 16 {
