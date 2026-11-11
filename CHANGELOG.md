@@ -10,7 +10,7 @@
 
 ---
 
-## [Unreleased]
+## [0.3.2] - 2026-11-11
 
 ### Added
 - `w1!` / `w2!` / `w3!` UTF-16 宽字符串混淆：编译期经 `encode_utf16` 转换，**不追加**结尾 `0u16`、**允许内部 NUL**；返回 `StackU16<N>` / `HeapU16<N>`（`N` 为码元数，空串为 0），适合显式长度 / 长度前缀 API；`w1` 恒纯栈，`w2` / `w3` 按档位与 `alloc` 选择容器
@@ -48,5 +48,6 @@
 - 引入现代对称密码学设计要素（SPN、动态 S 盒 / P 盒、ARX、雪崩效应）以对抗 `angr` 等符号执行工具
 - 字符串 / 字节 / CStr 容器在离开作用域时执行 Volatile 擦除
 
+[0.3.2]: https://github.com/AlbusPhos/obfstr2/releases/tag/v0.3.2
 [0.3.1]: https://github.com/AlbusPhos/obfstr2/releases/tag/v0.3.1
 [0.3.0]: https://github.com/AlbusPhos/obfstr2/releases/tag/v0.3.0
