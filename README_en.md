@@ -91,13 +91,13 @@ Ships 17+ polymorphic encryption/decryption primitives spanning stream ciphers, 
 ### 2. Reverse-Engineering Key Ratchet and End-to-End Avalanche Coupling
 Refuses to expose per-layer keys in the binary; instead builds a bidirectional state-coupling chain spanning "compile-time forward encryption" and "runtime reverse-order decryption":
 - **Zero extra key storage ($\pmod{2^{64}}$ multiplicative-inverse ratchet)**: each chunk stores only a single root key. At compile time, the 64-bit odd multiplicative inverse `inv_mul64` combined with the current layer's last byte derives the outer-layer key in reverse; at runtime, decryption restores the next layer's key forward from the last byte:
-  $$K_{\text{next}} = (K_{\text{cur}} + \text{ghost\_state}) \times (\text{last\_byte} \mid 1) \pmod{2^{64}}$$
+  $$K_{\text{next}} = (K_{\text{cur}} + \text{ghost\\_state}) \times (\text{last\\_byte} \mid 1) \pmod{2^{64}}$$
 - **Cross-chunk ghost state (`ghost_state`)**: after each chunk is decrypted and appended to the main container, the main container's trailing bytes are extracted and accumulated into the global `ghost_state` (mirrored precisely at compile time by the `sim_ghost` simulator). Any attempt to skip preceding chunks in a debugger, patch a single memory byte, or statically strip a single sub-function causes a complete avalanche across all subsequent chunks and layer keys.
 
 ### 3. Superlinear Chunking, Realistic Junk Chunks, and Number-Theoretic Opaque Predicates
 - **Superlinear chunking with short-chunk padding**: splits payloads at random increasing steps of $\lceil i^{1.4} \rceil$ (the head is extremely fragmented to break signatures, the tail grows smoothly to control chunk count); mid/high tiers force `pkcs7_16` padding in front of short blocks ($<16\text{B}$), eliminating short-string length side channels.
 - **100% realistic junk chunks**: forged data chunks are randomly injected according to tier-dependent probabilities and go through exactly the same multi-layer encryption, ciphertext storage, and runtime decryption as real chunks, making them indistinguishable in decompiler views.
-- **Elementary number-theoretic opaque predicates**: integrity checks based on number-theoretic identities such as quadratic residues modulo 4 (e.g., $(x^2) \ \& \ 3 \neq 2$ always holds) are injected at the end of chunk decryption. After `black_box` blocks compile-time folding, junk chunks necessarily trigger `wipe_data()` at runtime to wipe themselves, keeping the main container and `ghost_state` perfectly consistent.
+- **Elementary number-theoretic opaque predicates**: integrity checks based on number-theoretic identities such as quadratic residues modulo 4 (e.g., $x^2 \not\equiv 2 \pmod 4$ always holds) are injected at the end of chunk decryption. After `black_box` blocks compile-time folding, junk chunks necessarily trigger `wipe_data()` at runtime to wipe themselves, keeping the main container and `ghost_state` perfectly consistent.
 
 ### 4. Call-Graph Smashing and LLVM Optimization Barriers
 Defends specifically against static cross-reference (Xrefs) tracking, bulk function hooking, and aggressive compiler optimization:
@@ -128,11 +128,11 @@ When handling MB-scale or larger payloads (e.g., embedding large binary firmware
 
 ### Trade-offs
 
-| We Chose                      | Over                                        | Reason                                                                                                                                        |
-|:------------------------------|:--------------------------------------------|:----------------------------------------------------------------------------------------------------------------------------------------------|
-| Security Strength             | Minimal Binary Size                         | High-strength cascaded decryption, junk chunks, and polymorphic expansion inevitably cause code bloat—a necessary cost to block reverse analysis |
-| Non-Deterministic Builds      | Reproducible Builds                         | Guaranteeing that every build has completely different artifact signatures is the core defense against automated signature extraction and bulk scripts |
-| White-Box Adversarial Strength | Theoretical Cryptographic Indestructibility | The goal is to drastically raise the attacker's time and compute cost in white-box reverse analysis, symbolic execution, and dynamic debugging |
+| We Chose                       | Over                                        | Reason                                                                                                                                                 |
+|:-------------------------------|:--------------------------------------------|:-------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Security Strength              | Minimal Binary Size                         | High-strength cascaded decryption, junk chunks, and polymorphic expansion inevitably cause code bloat—a necessary cost to block reverse analysis       |
+| Non-Deterministic Builds       | Reproducible Builds                         | Guaranteeing that every build has completely different artifact signatures is the core defense against automated signature extraction and bulk scripts |
+| White-Box Adversarial Strength | Theoretical Cryptographic Indestructibility | The goal is to drastically raise the attacker's time and compute cost in white-box reverse analysis, symbolic execution, and dynamic debugging         |
 
 > While permanent cryptographic-theoretical security is not guaranteed, modern cryptographic design principles (Confusion, Diffusion, SPN networks, Avalanche Effect) are deeply incorporated in the engineering implementation.
 
