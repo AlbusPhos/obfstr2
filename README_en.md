@@ -1,4 +1,4 @@
-<!-- i18n-sync-anchor:(sha256:f12972bab62efbe0617322f59dc0069556a42fcdced7d5f0afc8ddc7a45d3900 reviewed:false source:README.md) -->
+<!-- i18n-sync-anchor:(sha256:6427b70d6d9816d2f26a57c4111ad5a0818ea0b6ab5628da6b84366a536ac388 reviewed:true source:README.md) -->
 # obfstr2
 
 > **Polymorphic compile-time string/wide-str/wide-cstr/bytes/int/float/cstr/file obfuscation**
@@ -91,7 +91,7 @@ Ships 17+ polymorphic encryption/decryption primitives spanning stream ciphers, 
 ### 2. Reverse-Engineering Key Ratchet and End-to-End Avalanche Coupling
 Refuses to expose per-layer keys in the binary; instead builds a bidirectional state-coupling chain spanning "compile-time forward encryption" and "runtime reverse-order decryption":
 - **Zero extra key storage ($\pmod{2^{64}}$ multiplicative-inverse ratchet)**: each chunk stores only a single root key. At compile time, the 64-bit odd multiplicative inverse `inv_mul64` combined with the current layer's last byte derives the outer-layer key in reverse; at runtime, decryption restores the next layer's key forward from the last byte:
-  $$K_{\text{next}} = (K_{\text{cur}} + \text{ghost\\_state}) \times (\text{last\\_byte} \mid 1) \pmod{2^{64}}$$
+  $$K _ {\text{next}} = (K _ {\text{cur}} + \text{ghost\\_state}) \times (\text{last\\_byte} \mid 1) \pmod{2^{64}}$$
 - **Cross-chunk ghost state (`ghost_state`)**: after each chunk is decrypted and appended to the main container, the main container's trailing bytes are extracted and accumulated into the global `ghost_state` (mirrored precisely at compile time by the `sim_ghost` simulator). Any attempt to skip preceding chunks in a debugger, patch a single memory byte, or statically strip a single sub-function causes a complete avalanche across all subsequent chunks and layer keys.
 
 ### 3. Superlinear Chunking, Realistic Junk Chunks, and Number-Theoretic Opaque Predicates
@@ -122,7 +122,7 @@ When handling MB-scale or larger payloads (e.g., embedding large binary firmware
 
 1. **White-Box Threat Model** — Traditional cryptographic algorithms (such as standard ChaCha20/AES) are unbreakable in a black-box setting, but under a **white-box model** where reverse engineers have full control over the binary, once algorithm signatures or constants are identified, an attacker only needs to extract the Key/IV to batch-decrypt with a script in seconds. `obfstr2` takes **maximizing reverse-engineering cognitive resistance and script recovery time** as its core metric, forcing attackers to analyze each case individually through non-standard in-house primitives and polymorphic orchestration.
 2. **Complementary Probabilistic Security Model** — Layer selection is not a fixed recipe. Based on the tier's latency ceiling (`max_latency`) and target security (`min_security`), primitives are randomly sampled and stacked from the pool until the combined security satisfies:
-   $$\text{Security}_{\text{combined}} = 1 - \prod_{i=1}^{k} \left(1 - \frac{\text{Security}_i}{100}\right) \ge \text{min\_security}$$
+   $$\text{Security} _ {\text{combined}} = 1 - \prod _ {i=1}^{k} \left(1 - \frac{\text{Security} _ i}{100}\right) \ge \text{min\\_security}$$
 3. **Registry-Decoupled Architecture** — All algorithms converge into two static registries: `Crypto { name / enc / dec / support / security / latency / metrics }` (polymorphic encryption/decryption) and `Storage { ast / support / latency }` (polymorphic ciphertext storage). The orchestrator `build_obfuscated_bytes` is solely responsible for the *chunk → encrypt → store → fold-emit* pipeline. Adding a new primitive only requires appending a table entry without modifying the orchestration pipeline.
 4. **Compile-Time Evaluation with Zero Redundant Checks** — Procedural macros complete all encryption and state simulation at compile time and expand into self-contained TokenStreams; runtime depends only on `types`, `crypto`, and `encoding` from `lib-unknown` (`no_std` compatible). Length/alignment invariants already strictly verified at compile time are used directly at runtime via `unwrap_unchecked`, leaving no branch-validation overhead.
 
