@@ -1,3 +1,4 @@
+<!-- i18n-sync-anchor:(sha256:f12972bab62efbe0617322f59dc0069556a42fcdced7d5f0afc8ddc7a45d3900 reviewed:false source:README.md) -->
 # obfstr2
 
 > **Polymorphic compile-time string/wide-str/wide-cstr/bytes/int/float/cstr/file obfuscation**
@@ -18,6 +19,7 @@ Comprehensive coverage across nine payload types: native strings, UTF-16 wide st
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Core Highlights](#core-highlights)
 - [Design Philosophy](#design-philosophy)
 - [Macro Overview](#macro-overview)
 - [When to Use vs. When Not to Use](#when-to-use-vs-when-not-to-use)
@@ -33,7 +35,7 @@ Comprehensive coverage across nine payload types: native strings, UTF-16 wide st
 
 ```toml
 [dependencies]
-obfstr2 = "0.3"
+obfstr2 = "0.4"
 ```
 
 ```rust
@@ -75,37 +77,69 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 
 > **Security Levels:** All obfuscation macros offer three security levels: 1 (low overhead), 2 (recommended/balanced), and 3 (high-intensity anti-reverse engineering).
 
+## Core Highlights
+
+`obfstr2` is not a simple "compile-time XOR" macro, but a polymorphic cryptographic obfuscation pipeline purpose-built against **white-box reverse analysis, decompilers (IDA/Ghidra F5), and symbolic execution engines (angr/Z3)**:
+
+### 1. Cryptographic Primitive Library Resistant to Symbolic Execution and Decompilation
+Ships 17+ polymorphic encryption/decryption primitives spanning stream ciphers, substitution-permutation networks (SPN), dynamic box transforms, and block ciphers, quantified and graded by runtime latency and security:
+- **In-house MSE / MSE2 algorithm family**: combines CFB ciphertext feedback, dynamic S-Box / P-Box that mutate byte-by-byte with historical state, 128-bit nonlinear key derivation based on fixed-point approximations of transcendental numbers ($\pi$, $1/e$), and 4-round ARX diffusion over 64B blocks — eliminating any chance of identifying standard algorithm constants (such as ChaCha20 signatures) and batch-decrypting with off-the-shelf tools.
+- **Cross-domain floating-point algebraic obfuscation (`rot_xor_f` / `xor_diff_f`)**: expands basic integer bit operations (rotation, XOR) into equivalent IEEE-754 floating-point division, truncation, and exponent construction. While sharply raising the cognitive load of decompiler F5 pseudo-code, it directly triggers path explosion and solver timeouts in SMT solvers under nonlinear floating-point constraints.
+- **Dynamic box inversion and modular multiplicative inverses**: compile-time encryption with odd multiplicative inverses modulo $2^8$, runtime single-multiplication decryption (`inv_mul`); runtime key-driven shuffling generates S-Box / P-Box and their inverses (`gen_s` / `inv_s`), completely removing static lookup-table signatures from the binary.
+- **Global positional diffusion**: introduces a `fisher_yates` permutation based on a 128-bit unbiased multiplicative interval mapping, breaking byte-boundary alignment.
+
+### 2. Reverse-Engineering Key Ratchet and End-to-End Avalanche Coupling
+Refuses to expose per-layer keys in the binary; instead builds a bidirectional state-coupling chain spanning "compile-time forward encryption" and "runtime reverse-order decryption":
+- **Zero extra key storage ($\pmod{2^{64}}$ multiplicative-inverse ratchet)**: each chunk stores only a single root key. At compile time, the 64-bit odd multiplicative inverse `inv_mul64` combined with the current layer's last byte derives the outer-layer key in reverse; at runtime, decryption restores the next layer's key forward from the last byte:
+  $$K_{\text{next}} = (K_{\text{cur}} + \text{ghost\_state}) \times (\text{last\_byte} \mid 1) \pmod{2^{64}}$$
+- **Cross-chunk ghost state (`ghost_state`)**: after each chunk is decrypted and appended to the main container, the main container's trailing bytes are extracted and accumulated into the global `ghost_state` (mirrored precisely at compile time by the `sim_ghost` simulator). Any attempt to skip preceding chunks in a debugger, patch a single memory byte, or statically strip a single sub-function causes a complete avalanche across all subsequent chunks and layer keys.
+
+### 3. Superlinear Chunking, Realistic Junk Chunks, and Number-Theoretic Opaque Predicates
+- **Superlinear chunking with short-chunk padding**: splits payloads at random increasing steps of $\lceil i^{1.4} \rceil$ (the head is extremely fragmented to break signatures, the tail grows smoothly to control chunk count); mid/high tiers force `pkcs7_16` padding in front of short blocks ($<16\text{B}$), eliminating short-string length side channels.
+- **100% realistic junk chunks**: forged data chunks are randomly injected according to tier-dependent probabilities and go through exactly the same multi-layer encryption, ciphertext storage, and runtime decryption as real chunks, making them indistinguishable in decompiler views.
+- **Elementary number-theoretic opaque predicates**: integrity checks based on number-theoretic identities such as quadratic residues modulo 4 (e.g., $(x^2) \ \& \ 3 \neq 2$ always holds) are injected at the end of chunk decryption. After `black_box` blocks compile-time folding, junk chunks necessarily trigger `wipe_data()` at runtime to wipe themselves, keeping the main container and `ghost_state` perfectly consistent.
+
+### 4. Call-Graph Smashing and LLVM Optimization Barriers
+Defends specifically against static cross-reference (Xrefs) tracking, bulk function hooking, and aggressive compiler optimization:
+- **Adaptive wrapping and vtable trampolines**: the more consecutive inline layers, the exponentially higher the probability of outsourcing to a standalone function. Outsourced forms are randomly chosen at 50% probability between a named `#[inline(never)]` function and a **dynamically dispatched trampoline** invoked indirectly through a `&mut dyn FnMut` fat pointer, converting direct calls into vtable-indirect calls and cutting the static call graph.
+- **O(log M) bottom-up multiway fold tree**: when there are many chunks, adjacent 4–12 chunk nodes are recursively wrapped into a multi-level call tree (`__fold_{id}_{depth}_{idx}`), preventing the root function from growing linearly with payload size.
+- **Cold/hot section segregation and anti-IPO**: randomly attaches `#[cold]` with some probability to evict decryption logic into `.text.unlikely`, destroying spatial locality; casts function pointers to `usize` and feeds them into `black_box` to fake address escape, preventing LLVM from performing cross-procedural constant propagation and dead-argument elimination.
+
+### 5. Polymorphic Steganographic Storage and Controlled Memory Lifetime
+- **Polymorphic ciphertext and key disguise**: ciphertext and each chunk's 8-byte initial key are encoded through a random `Storage` strategy, disguised as ordinary byte streams, `u64`/`u128` integer arrays, MAC addresses, UUIDs, IPv6 addresses, PEM certificates, or HB2 whitespace steganography, evading high-entropy data-section scanning.
+- **End-to-end volatile wiping**: not only do the final returned string/byte containers perform volatile zeroing over their entire capacity when leaving scope (`Drop`), but intermediate temporary containers of variable-length decryption layers (such as `mse2`, `pkcs7_16`) are immediately `drop`-wiped after handover, preventing plaintext or intermediate states from lingering in stack/heap memory.
+- **Fine-grained stack budget (`STACK_BUDGET`)**: `budget-1k` through `budget-8m` features control the pure-stack ceiling; compile time automatically tracks the peak inflated size across multi-layer encryption/decryption and routes intelligently between `Stack*` and `Heap*` containers, fitting `no_std` bare-metal and embedded firmware.
+
+### 6. Blazing-Fast Compilation of MB-Scale Payloads (No `long_running_const_eval`)
+When handling MB-scale or larger payloads (e.g., embedding large binary firmware or resource files via `f1!` / `f2!`), `obfstr2` compiles significantly faster than the traditional `obfstr`, and **requires no `#![allow(long_running_const_eval)]` in your code**:
+- **Inline backpressure and multiway fold trees**: expanding a large payload into a single giant function would plunge the LLVM backend into $O(V^2)$ complexity explosion during register allocation and instruction scheduling. `obfstr2` uses $\lceil i^{1.4} \rceil$ superlinear chunking to control total chunk count, combined with exponential inline backpressure (`effective_wrap_pct`) and an **O(log M) multiway fold tree (`fold_chunk_nodes`)**, strictly converging each function body's child count to a constant level ($\le 12$), letting the LLVM backend compile multi-MB payloads in roughly linear time.
+
+---
+
 ## Design Philosophy
 
 ### Core Principles
 
-1. **Extreme Polymorphism** — The exact same input produces completely different ciphertext forms on every build:
-    - **Random Chunking**: Splits payloads at random increasing steps; chunk boundaries change on every compilation.
-    - **Random Primitive Stacking**: Randomly selects and stacks multiple encryption/decryption layers according to the security level until the combined security threshold is met.
-    - **Random Storage Disguises**: Ciphertext may appear disguised in various forms such as byte strings, `u64` arrays, `u128` arrays, MAC addresses, UUIDs, IPv6 addresses, or PEM.
-    - **Key Steganography**: Keys for each layer are likewise hidden using random storage forms and reconstructed only at runtime; no plaintext key constants appear in the expanded code.
-    - **Chaff Injection**: Mixes in junk code and meaningless pseudo-state variables to further disrupt static analysis and data-flow tracking.
-
-   Together, these mechanisms ensure that batch deobfuscation scripts cannot rely on any fixed pattern.
-
-2. **Abstracted Obfuscation Pipeline** — All algorithms converge into two registries: `Crypto { name / enc / dec / support / security / latency / metrics }` (polymorphic encryption/decryption) and `Storage { ast / support / security / latency }` (polymorphic ciphertext storage). `build_obfuscated_bytes` is solely responsible for orchestrating the *chunk → encrypt → store → emit* pipeline. Adding a new algorithm only requires appending a table entry without modifying the pipeline.
-3. **Compile-Time Evaluation, Minimal Runtime Dependencies** — Procedural macros expand into self-contained TokenStreams. Obfuscation is completed at compile time, while runtime depends only on `types`, `crypto`, and `encoding` from `lib-unknown`. `no_std` compatible. Invariants verified at expansion time use `unwrap_unchecked`, leaving zero runtime validation overhead.
-4. **Symbolic Execution Resistance** — `obfstr2` moves beyond traditional "simple XOR" by introducing **modern symmetric cryptography design principles (Confusion, Diffusion, SPN networks, Avalanche Effect)** into string obfuscation to counter automated symbolic execution tools like `angr` (see reproduction commands in the [Contributing](#contributing) section).
+1. **White-Box Threat Model** — Traditional cryptographic algorithms (such as standard ChaCha20/AES) are unbreakable in a black-box setting, but under a **white-box model** where reverse engineers have full control over the binary, once algorithm signatures or constants are identified, an attacker only needs to extract the Key/IV to batch-decrypt with a script in seconds. `obfstr2` takes **maximizing reverse-engineering cognitive resistance and script recovery time** as its core metric, forcing attackers to analyze each case individually through non-standard in-house primitives and polymorphic orchestration.
+2. **Complementary Probabilistic Security Model** — Layer selection is not a fixed recipe. Based on the tier's latency ceiling (`max_latency`) and target security (`min_security`), primitives are randomly sampled and stacked from the pool until the combined security satisfies:
+   $$\text{Security}_{\text{combined}} = 1 - \prod_{i=1}^{k} \left(1 - \frac{\text{Security}_i}{100}\right) \ge \text{min\_security}$$
+3. **Registry-Decoupled Architecture** — All algorithms converge into two static registries: `Crypto { name / enc / dec / support / security / latency / metrics }` (polymorphic encryption/decryption) and `Storage { ast / support / latency }` (polymorphic ciphertext storage). The orchestrator `build_obfuscated_bytes` is solely responsible for the *chunk → encrypt → store → fold-emit* pipeline. Adding a new primitive only requires appending a table entry without modifying the orchestration pipeline.
+4. **Compile-Time Evaluation with Zero Redundant Checks** — Procedural macros complete all encryption and state simulation at compile time and expand into self-contained TokenStreams; runtime depends only on `types`, `crypto`, and `encoding` from `lib-unknown` (`no_std` compatible). Length/alignment invariants already strictly verified at compile time are used directly at runtime via `unwrap_unchecked`, leaving no branch-validation overhead.
 
 ### Trade-offs
 
-| We Chose                      | Over                                        | Reason                                                                                                                               |
-|:------------------------------|:--------------------------------------------|:-------------------------------------------------------------------------------------------------------------------------------------|
-| Security Strength             | Minimal Binary Size                         | High-strength cascaded decryption and polymorphic expansion inevitably cause code bloat—a necessary cost to block reverse analysis   |
-| Non-Deterministic Builds      | Reproducible Builds                         | Ensuring polymorphism is the core defense against automated signature extraction                                                     |
-| Practical Engineering Defense | Theoretical Cryptographic Indestructibility | The goal of this project is to drastically raise the cost of attack in reverse analysis, symbolic execution, and reverse engineering |
+| We Chose                      | Over                                        | Reason                                                                                                                                        |
+|:------------------------------|:--------------------------------------------|:----------------------------------------------------------------------------------------------------------------------------------------------|
+| Security Strength             | Minimal Binary Size                         | High-strength cascaded decryption, junk chunks, and polymorphic expansion inevitably cause code bloat—a necessary cost to block reverse analysis |
+| Non-Deterministic Builds      | Reproducible Builds                         | Guaranteeing that every build has completely different artifact signatures is the core defense against automated signature extraction and bulk scripts |
+| White-Box Adversarial Strength | Theoretical Cryptographic Indestructibility | The goal is to drastically raise the attacker's time and compute cost in white-box reverse analysis, symbolic execution, and dynamic debugging |
 
-> While cryptographic security is not guaranteed, modern cryptographic design principles are actively incorporated.
+> While permanent cryptographic-theoretical security is not guaranteed, modern cryptographic design principles (Confusion, Diffusion, SPN networks, Avalanche Effect) are deeply incorporated in the engineering implementation.
 
 ### Non-Goals
 
-- Does not perform control-flow obfuscation or anti-debugging.
-- Does not guarantee reproducible builds, nor does it replace strong encryption for storing sensitive data at rest.
+- Does not perform control-flow flattening on host business code (only call-graph and control-flow obfuscation on the internal decryption chain of macro expansions), nor does it include anti-debugger detection.
+- Does not guarantee reproducible builds (Reproducible Builds), and does not replace standard cryptographic libraries for network transmission or persistent encrypted storage.
 
 ## Macro Overview
 
@@ -142,7 +176,7 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 
 **C-String Macros**
 
-- Also reuse the byte-obfuscation core: the payload is appended with a trailing `\0` and obfuscated as a whole, then reconstructed at runtime via `try_from(&mut [u8])` (truncating at the first NUL + zeroing the decrypted source buffer).
+- Also reuse the byte-obfuscation core: the payload is appended with a trailing `\0` and obfuscated as a whole, then reconstructed at runtime via `from_inner_with_nul` (zero-copy: truncating at the first NUL and reusing the decrypted container directly as a CStr).
 - All three literal forms are semantically equivalent; use `b"..."` for non-UTF-8 payloads.
 - Any internal NUL byte in the payload triggers a compile-time error.
 
@@ -166,7 +200,8 @@ For more scenarios, see [`examples/showcase.rs`](examples/showcase.rs) (real-wor
 **Good fit for:**
 
 - Hiding strings and constant bytes in `no_std` firmware or bare-metal programs.
-- Scenarios requiring evasion from bulk static string scanning.
+- Scenarios requiring evasion from bulk static string scanning, decompiler pseudo-code analysis, and symbolic execution.
+- Embedding and obfuscating MB-scale large binary files (without triggering the `long_running_const_eval` compilation limit).
 
 **Not suitable for:**
 
@@ -199,7 +234,7 @@ To disable default features (pure stack, no heap):
 
 ```toml
 [dependencies]
-obfstr2 = { version = "0.3", default-features = false }
+obfstr2 = { version = "0.4", default-features = false }
 ```
 
 ## Platform & Environment Support
@@ -210,7 +245,7 @@ obfstr2 = { version = "0.3", default-features = false }
 
 ## Benchmarks
 
-`b1!` has near-zero runtime overhead (on par with the plaintext baseline); `b2!` incurs roughly tens of times more runtime overhead; `b3!` has higher overhead corresponding to stronger anti-analysis resistance. Binary size and build time also increase significantly with higher levels—choose your level based on whether your use case is "runtime-sensitive" or "reversing-cost-sensitive". Detailed metrics and reproduction steps are below.
+`b1!` has near-zero runtime overhead (on par with the plaintext baseline); `b2!` incurs roughly tens of times more runtime overhead; `b3!` has higher overhead corresponding to stronger anti-analysis resistance. For short payloads (such as the 1 KiB sample below), build time rises with the tier because polymorphic call trees and inline barriers are generated; **but for MB-scale and larger payloads, thanks to native procedural-macro execution, inline backpressure, and the $O(\log M)$ multiway fold tree, `obfstr2` actually compiles faster than the `obfstr` that relies on `const` evaluation, with no need for `allow(long_running_const_eval)`**. Choose your level based on whether your use case is "runtime-sensitive" or "reversing-cost-sensitive". Detailed metrics and reproduction steps are below.
 
 The sole source for the data below is `tests/perf.rs` (re-runnable via `cargo test --test perf -- --ignored --nocapture`; report-only, numbers are displayed without assertions). Due to polymorphism, results vary across runs; the table below shows a single measured run for order-of-magnitude reference only.
 
@@ -239,20 +274,22 @@ Parameter Notes:
 
 </details>
 
-| Case               | Time / Deobf | Total Runtime (512 loops, incl. startup) | Incremental Build   | Cold Build           | Binary Size (unstripped) | Expand Chars    |
-|:-------------------|:-------------|:-----------------------------------------|:--------------------|:---------------------|:-------------------------|:----------------|
-| Plaintext Baseline | —            | 10.365382ms                              | 171.992052ms        | 414.602076ms         | 445040                   | 1437            |
-| CasualX obfbytes!  | -0.10µs      | 10.313586ms (-0%)                        | 211.984155ms (23%)  | 1.546629633s (273%)  | 448072 (1%)              | 7780 (441%)     |
-| obfstr2 b1!        | 19.57µs      | 20.383619ms (97%)                        | 686.693935ms (299%) | 5.199780109s (1154%) | 519688 (17%)             | 104605 (7179%)  |
-| obfstr2 b2!        | 295.99µs     | 161.912404ms (1462%)                     | 1.619466966s (842%) | 5.734792802s (1283%) | 640912 (44%)             | 284900 (19726%) |
-| obfstr2 b3!        | 926.98µs     | 484.979339ms (4579%)                     | 4.180500072s (2331%)| 7.775605694s (1775%) | 846864 (90%)             | 637097 (44235%) |
+| Case               | Time / Deobf | Total Runtime (512 loops, incl. startup) | Incremental Build     | Cold Build            | Binary Size (unstripped) | Expand Chars     |
+|:-------------------|:-------------|:-----------------------------------------|:----------------------|:----------------------|:-------------------------|:-----------------|
+| Plaintext Baseline | —            | 10.364751ms                              | 171.966449ms          | 454.140508ms          | 445040                   | 1437             |
+| CasualX obfbytes!  | 0.01µs       | 10.371281ms（0%）                        | 202.474127ms（18%）   | 1.909735432s（321%）  | 448072（1%）             | 7780（441%）     |
+| obfstr2 b1!        | 19.46µs      | 20.327803ms（96%）                       | 475.87713ms（177%）   | 5.003601624s（1002%） | 512192（15%）            | 71476（4874%）   |
+| obfstr2 b2!        | 314.51µs     | 171.393708ms（1554%）                    | 1.232847096s（617%）  | 5.00176234s（1001%）  | 613456（38%）            | 190793（13177%） |
+| obfstr2 b3!        | 768.22µs     | 403.694785ms（3795%）                    | 2.860009413s（1563%） | 6.236919564s（1273%） | 812000（82%）            | 536333（37223%） |
 
 ## Security
 
 > **Disclaimer:** This project is intended strictly for legitimate and compliant use cases such as software security protection, anti-reverse-engineering research, and firmware code protection. Using it for malware development or unauthorized penetration testing is strictly prohibited.
 
 - **Unsafe Code**: Expanded code contains `unwrap_unchecked` (length invariants are verified at macro-expansion time, incurring zero runtime check overhead); container `Drop` implementations zero out plaintext memory via volatile writes.
-- If you discover a security vulnerability, please open an Issue directly (this repository currently does not have a private reporting channel).
+- **Vulnerability Disclosure**: If you discover a security issue, please report it through
+  [GitHub Private Vulnerability Reporting](https://github.com/AlbusPhos/obfstr2/security/advisories/new),
+  or send an email to `owo.zzz@proton.me`. **Please do not** create a public Issue or Pull Request for an undisclosed security vulnerability.
 
 ## Contributing
 
@@ -266,7 +303,7 @@ Issues and Pull Requests are welcome!
 - `cargo test --test nostd`: `x86_64-unknown-none` bare-metal toolchain check (`b1` pure stack without alloc + `b2` with heap; requires target installed).
 - `cargo test --test perf -- --ignored --nocapture`: Performance comparison report (Plaintext baseline vs. CasualX vs. `b1/b2/b3`, measuring build time / runtime / expand chars / binary size; report-only without assertions, requires network access to fetch `obfstr` and `cargo-expand` installed).
 - `cd obfstr2-macros && cargo test --lib`: Pure unit tests and encryption layer selection simulations (milliseconds, automatically skips `#[ignore]` cases).
-- `cd obfstr2-macros && cargo test --lib test_storages -- --ignored --nocapture`: Round-trip `dyntest` verification for all storage strategies (builds temporary guest projects).
+- `cd obfstr2-macros && cargo test --lib test_storages_latency -- --ignored --nocapture`: Round-trip `dyntest` verification and latency calibration for all storage strategies (multi-length, multi-round sampling; builds temporary guest projects and takes a while).
 - `cd obfstr2-macros && cargo test --lib tests::crypto::test_cryptos_latency -- --ignored --nocapture`: Comprehensive L-score latency calibration for primitives (multi-sample, multi-round, report-only, takes several minutes).
 - `cd obfstr2-macros && cargo test --lib tests::crypto::test_cryptos_security -- --ignored --nocapture`: Primitive security score and `angr` resistance calibration (requires `angr` installed).
 - `ANGR_PYTHONPATH=/path/to/python-with-angr cargo test --test angr -- main --ignored --show-output`: Symbolic execution resistance verification (requires `angr` installed; specify the Python interpreter path via `ANGR_PYTHONPATH`).

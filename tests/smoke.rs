@@ -7,7 +7,6 @@
 //! 根 crate 冒烟测试：全部 24 个宏的小载荷 roundtrip。
 //!
 //! 直接调用宏做断言，无需 dyntest 现场建工程，毫秒级。
-use obfstr2::types::cstr::CStr;
 use obfstr2::{
     b1, b2, b3, cs1, cs2, cs3, cw1, cw2, cw3, f1, f2, f3, fl1, fl2, fl3, i1, i2, i3, s1, s2, s3,
     w1, w2, w3,

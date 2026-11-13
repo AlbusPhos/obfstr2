@@ -10,6 +10,31 @@
 
 ---
 
+## [Unreleased]
+
+## [0.4.0] - 2026-11-13
+
+### Added
+- 新增 `hb2` 空白字符隐写存储策略：编译期将密文逐字节编码为 8 个 HB2 符号（`\0` / `\n`），并随机插入约 10% 的 OpenSSL / 系统程序伪特征字符串（每条 ≤30 字节）；运行时 `hb2_decode` 宽松跳过表外文本。适用载荷 8..=8192 字节，`latency = 85`，仅参与高强度档（均衡档上限 `max_latency = 80`）
+- 新增 `obfstr2-macros/src/tests/storage.rs` 的 `test_storages_latency`（取代原 `storage.rs` 内的 `test_storages` 往返测试）：对全部存储策略做多长度、多轮次（Run / Size / Build 加权）latency 校准压测，并在压测中校验解码结果与原始数据一致；同时将 `obfstr2_dep` 辅助函数抽到 `tests/mod.rs` 供 crypto / storage 测试共用
+
+### Changed
+- 依赖升级：`lib-unknown` 由 `=0.3.2` 升级至 `=0.4.1`；`inv_mul8` / `inv_mul64` 迁移至 `crypto::core::inv_mul` 子模块，并新增 `encoding-hb2` 特性依赖
+- 密钥调度重构：每个 chunk 仅生成并存储一个根密钥，后续层密钥在编译期通过 64 位奇数乘法逆元 `inv_mul64` 结合上一层尾字节逆向派生（`key × inv_mul64(last | 1) - ghost_state`），运行期解密时正向还原下一层密钥，避免在二进制中为每一层单独存储密钥
+- 跨块 `ghost_state` 由 `u8` 拓宽为 `u64` 并随机初始化；加密阶段引入编译期镜像 `sim_ghost` 精确追踪主容器末尾字节，使编译期正向加密与运行期逆序解密的密钥推进保持一致
+- `cs1!` / `cs2!` / `cs3!` 改用 `CStr::from_inner_with_nul` 零拷贝消费解密容器，移除独立的 CStr 构造、载荷拷贝与源缓冲擦除
+- `mse2` / `pkcs7_16` 解密输出改用 `Buffer::new_zeroed` 预填长度，移除为设置长度而进行的整块输入拷贝
+- 移除解密容器在 `drop` 前的显式 `wipe_data()`：`Buffer::Drop` 已对整段 capacity 执行 volatile 清零（覆盖字符串、字节、CStr、宽字符串与 chunk 中间容器）
+- MAC / UUID / IPv6 / PEM 存储解码直接写入目标容器的字节视图，移除 16B / 48B scratch 容器及其拷贝与擦除
+- 存储策略 latency 重新校准：`mac` 10→80、`uuid` 10→68、`ipv6` 10→71、`pem` 12→66，使各策略按实测开销参与对应档位筛选；低延迟档（上限 30）自此仅保留 `bytes`、`u64`、`u128` 三种存储
+- PEM 存储适用区间由 128..=10240 调整为 128..=8192
+- `Storage` 注册表移除未被使用的 `security` 字段
+- 文档：README 新增“核心亮点”章节，重写设计哲学、非目标、适用场景、性能与安全披露；`README_en.md` 完成全量同步并写入 i18n 锚点
+
+### Fixed
+- `build_obfuscated_bytes` 的 `stack_main_bytes` 参数更名为 `prefer_stack`，修正 `b2` 的语义反转
+- `cs2!` 与字节内核统一主容器族选择（新增 `b2_forced`），避免堆/栈类型随机不一致导致的类型不匹配
+
 ## [0.3.3] - 2026-11-11
 
 ### Added
@@ -47,7 +72,7 @@
 ## [0.3.0] - 2026-11-10
 
 ### Added
-- 七类载荷宏，每类提供低延迟 / 均衡 / 高强度三档：`s1~3!`、`b1~3!`、`f1~3!`、`i1~3!`、`fl1~3!`、`cs1~3!`、`s_fmt1~3!`；保留已废弃的 `s_fmt!`（等价 `s_fmt1!`）
+- 七类载荷宏，每类提供低延迟 / 均衡 / 高强度三档：`s1~3!`、`b1~3!`、`f1~3!`、`i1~3!`、`fl1~3!`、`cs1~3!`、`s_fmt1~3!`
 - 多态混淆编排：随机分块、按安全度目标叠加加密原语、密文随机伪装存储、逐层密钥隐写、垃圾块与完整性谓词
 - 加密原语注册表：`cbc_xor`、`xor_diff`、`wrapping_add`、`inv_mul`、`rot_xor`、`mse_no_ps`、`mse_no_s`、`mse`、`mse2`、`sbox_static`、`pbox_dynamic`、`sbox_dynamic`、`pkcs7_16`、`fisher_yates`、`rot_xor_f`、`xor_diff_f`、`chacha20`、`spn_2r`
 - 存储伪装策略：`bytes`、`mac`、`uuid`、`ipv6`、`pem`
@@ -60,6 +85,9 @@
 - 引入现代对称密码学设计要素（SPN、动态 S 盒 / P 盒、ARX、雪崩效应）以对抗 `angr` 等符号执行工具
 - 字符串 / 字节 / CStr 容器在离开作用域时执行 Volatile 擦除
 
-[0.3.2]: https://github.com/AlbusPhos/obfstr2/releases/tag/v0.3.2
-[0.3.1]: https://github.com/AlbusPhos/obfstr2/releases/tag/v0.3.1
+[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/AlbusPhos/obfstr2/compare/v0.3.3...v0.4.0
+[0.3.3]: https://github.com/AlbusPhos/obfstr2/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/AlbusPhos/obfstr2/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/AlbusPhos/obfstr2/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/AlbusPhos/obfstr2/releases/tag/v0.3.0

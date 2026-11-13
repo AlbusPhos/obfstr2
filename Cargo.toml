@@ -1,6 +1,6 @@
 [package]
 name = "obfstr2"
-version = "0.3.3"
+version = "0.4.0"
 edition = "2024"
 resolver = "2"
 rust-version = "1.92"
@@ -16,15 +16,15 @@ categories = ["no-std", "embedded"]
 
 
 [dependencies]
-obfstr2-macros = { version = "=0.3.3", path = "obfstr2-macros" }
-lib-unknown = { version = "=0.3.2", default-features = false, features = ["crypto", "types", "encoding"] }
+obfstr2-macros = { version = "=0.4.0", path = "obfstr2-macros" }
+lib-unknown = { version = "=0.4.1", default-features = false, features = ["crypto", "types", "encoding"] }
 
 [features]
 default = [
     "lib-unknown/alloc",
     "obfstr2-macros/alloc",
 ]
-# 栈预算控制：转发给 obfstr2-macros；同时启用多个时取最大档，未指定时默认 4 KiB
+
 budget-1k = ["obfstr2-macros/budget-1k"]
 budget-4k = ["obfstr2-macros/budget-4k"]
 budget-16k = ["obfstr2-macros/budget-16k"]
@@ -36,7 +36,7 @@ budget-4m = ["obfstr2-macros/budget-4m"]
 budget-8m = ["obfstr2-macros/budget-8m"]
 
 [dev-dependencies]
-lib-unknown = { version = "=0.3.2", features = ["dyntest"] }
+lib-unknown = { version = "=0.4.1", features = ["dyntest"] }
 
 
 [profile.release]

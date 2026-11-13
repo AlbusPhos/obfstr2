@@ -9,6 +9,7 @@
 use crate::crypto::CRYPTOS;
 use crate::crypto::{Crypto, LayerCtx};
 use crate::storage::{STORAGES, Storage};
+use lib_unknown::crypto::core::inv_mul::inv_mul64;
 use lib_unknown::rand::core::{random, random_range, shuffle};
 use proc_macro2::{Ident as Ident2, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
@@ -121,11 +122,12 @@ pub(crate) struct LayerCtxRecord {
 fn apply_single_layer(
     crypto: Crypto,
     data: Vec<u8>,
+    key: u64,
     chunk_tag: &str,
     layer_idx: usize,
 ) -> Result<(Vec<u8>, LayerCtxRecord), String> {
     let in_len = data.len();
-    let (key, iv) = (random::<u64>(), random::<u8>());
+    let iv = random::<u8>();
     // enc 期间 type_path/ident_tag/key_ident 无意义（enc 从不读它们），填占位符即可；
     // dec 时由 build_dec_layers 重填家族与确定性 Ident。
     let mut ctx = LayerCtx {
@@ -162,16 +164,39 @@ fn apply_single_layer(
 /// 加密选层：随机 `1..3 × magnification` 个起步，组合安全度
 /// （`1 - Π(1 - security)`）达标即停；真 chunk 与垃圾块共用，保证过滤口径一致。
 ///
+/// 整个 chunk 仅生成一个根密钥种子，第 `i (i >= 1)` 层在编译期通过
+/// `key.wrapping_mul(inv_mul64((last_dec as u64) | 1)).wrapping_sub(ghost_state)` 逆向派生密钥，
+/// 使运行期逆序解密时可通过 `key.wrapping_add(ghost_state).wrapping_mul((last_dec as u64) | 1)`
+/// 正向还原上一层密钥。
+///
 /// 若 `tier.pad_short` 开启且初始长度 `< 16`，强制前置一层 `pkcs7_16`（不计入 `op_count` 与安全度）。
 /// 返回 `(密文, 层快照)`；原语自报告长度与实际输出不一致时返回 `Err`。
 /// `chunk_tag` 仅用于错误定位（如 `"chunk#3"` / `"junk#3"`）。
 fn encrypt_layers(
     data: Vec<u8>,
     tier: TierParams,
+    ghost_state: u64,
     chunk_tag: &str,
 ) -> Result<(Vec<u8>, Vec<LayerCtxRecord>), String> {
     let mut data = data;
     let mut layers: Vec<LayerCtxRecord> = Vec::new();
+    let mut key = random::<u64>();
+
+    let mut push_layer = |crypto: Crypto,
+                          data: Vec<u8>,
+                          layers: &mut Vec<LayerCtxRecord>|
+     -> Result<Vec<u8>, String> {
+        if !layers.is_empty()
+            && let Some(&last_dec) = data.last()
+        {
+            key = key
+                .wrapping_mul(inv_mul64((last_dec as u64) | 1))
+                .wrapping_sub(ghost_state);
+        }
+        let (next_data, record) = apply_single_layer(crypto, data, key, chunk_tag, layers.len())?;
+        layers.push(record);
+        Ok(next_data)
+    };
 
     // 短块强制前置 pkcs7_16 填充：将不足 16B 的块补齐到 16B，不计入后续层数与安全度预算
     if tier.pad_short && data.len() < 16 {
@@ -180,9 +205,7 @@ fn encrypt_layers(
             .find(|op| op.name == "pkcs7_16" && (op.support)(data.len()))
             .cloned()
             .ok_or_else(|| format!("{chunk_tag} 缺少可用的 pkcs7_16 预填充原语"))?;
-        let (padded_data, record) = apply_single_layer(pkcs7, data, chunk_tag, layers.len())?;
-        data = padded_data;
-        layers.push(record);
+        data = push_layer(pkcs7, data, &mut layers)?;
     }
 
     let op_count = random_range(1..3_u8).wrapping_mul(tier.magnification.max(1)) as usize;
@@ -201,13 +224,11 @@ fn encrypt_layers(
             ));
         };
         let security = crypto.security;
-        let (next_data, record) = apply_single_layer(crypto, data, chunk_tag, layers.len())?;
-        data = next_data;
+        data = push_layer(crypto, data, &mut layers)?;
 
         let vulnerability = (100.0 - security as f64) / 100.0;
         combined_vulnerability *= vulnerability;
         current_combined_security = (100.0 * (1.0 - combined_vulnerability)) as u8;
-        layers.push(record);
     }
     Ok((data, layers))
 }
@@ -222,8 +243,8 @@ fn effective_wrap_pct(base: u8, inline_count: u32) -> u8 {
     (base as f64 * (1.0 + base as f64 / 100.0).powi(inline_count as i32)).min(100.0) as u8
 }
 
-/// 为单层 8 字节密钥生成随机 Storage 存储与运行时解码/即时擦除 AST。
-/// 返回语句定义 `let #key_ident: u64 = { ... };`。
+/// 为整个 chunk 的初始 8 字节密钥生成随机 Storage 存储与运行时解码/即时擦除 AST。
+/// 返回语句定义 `let mut #key_ident: u64 = { ... };`。
 fn gen_key_storage(key: u64, key_ident: &Ident2, tag: &str, max_latency: u8) -> TokenStream2 {
     let key_bytes = key.to_le_bytes();
     // 8 字节天然支持 mac, uuid, ipv6, bytes
@@ -241,18 +262,23 @@ fn gen_key_storage(key: u64, key_ident: &Ident2, tag: &str, max_latency: u8) -> 
     let storage_ast = (storage.ast)(&key_buf_ident, &stack_family, &key_bytes);
 
     quote! {
-        let #key_ident: u64 = {
+        #[allow(unused_variables, unused_mut)]
+        let mut #key_ident: u64 = {
             #storage_ast
-            u64::from_le_bytes(unsafe {#key_buf_ident.as_slice().try_into().unwrap_unchecked() })
+            u64::from_le_bytes(unsafe { #key_buf_ident.as_slice().try_into().unwrap_unchecked() })
         };
     }
 }
 
 /// 逆序解密 fold：`(AST, Ident_out) = dec(ctx, Ident_in)` 串联。
+/// 每个 chunk 仅声明一个初始密钥，每层解密后混入 `ghost_ident` 并通过
+/// `.wrapping_add(ghost_state).wrapping_mul((last_dec as u64) | 1)` 推进。
+#[allow(clippy::too_many_arguments)]
 fn build_dec_layers(
     layers: &[LayerCtxRecord],
     family: &TokenStream2,
     entry: Ident2,
+    ghost_ident: &Ident2,
     tag_prefix: &str,
     wrap_pct: u8,
     cold_pct: u8,
@@ -263,15 +289,24 @@ fn build_dec_layers(
     let mut inline_count = 0;
     let mut cur = entry;
 
+    let Some(entry_layer) = layers.last() else {
+        return (prelude, body, cur);
+    };
+
+    // 为整个 chunk 构建唯一的初始 key_ident 与存储加载 AST（对应加密链末层密钥）
+    let key_ident = format_ident!("__key_{tag_prefix}");
+    body.extend(gen_key_storage(
+        entry_layer.key,
+        &key_ident,
+        tag_prefix,
+        max_latency,
+    ));
+
     for (rev_pos, layer) in layers.iter().rev().enumerate() {
         let enc_idx = layers.len() - 1 - rev_pos;
         let tag = format!("{tag_prefix}_{enc_idx}");
         let ct = layer.ct_len;
         let pt = layer.pt_len;
-
-        // 为本层构建专有 key_ident 与存储加载 AST
-        let key_ident = format_ident!("__key_{tag}");
-        let key_storage_ast = gen_key_storage(layer.key, &key_ident, &tag, max_latency);
 
         // 档位控制的非内联概率 + 单调累积：0=全内联，>=100=全包装。
         let wrap = random_range(0..100u8) < effective_wrap_pct(wrap_pct, inline_count);
@@ -279,6 +314,7 @@ fn build_dec_layers(
             let in_ty = quote!(#family<#ct>);
             let out_ty = quote!(#family<#pt>);
             let param = format_ident!("enc");
+            let key_ref = format_ident!("__key_ref");
             let ctx = LayerCtx {
                 type_path: family.clone(),
                 key: layer.key,
@@ -287,6 +323,22 @@ fn build_dec_layers(
                 in_size: layer.pt_len,
                 out_size: layer.ct_len,
                 ident_tag: tag.clone(),
+            };
+
+            let (frag, next_ident) = (layer.crypto.dec)(&ctx, param.clone());
+            let advance_key_ast = if enc_idx > 0 && pt > 0 {
+                quote! {
+                    let _last_dec = ::core::hint::black_box(
+                        unsafe { *#next_ident.as_slice().last().unwrap_unchecked() }
+                    );
+                    *#key_ref = ::core::hint::black_box(
+                        #key_ident
+                            .wrapping_add(::core::hint::black_box(#ghost_ident))
+                            .wrapping_mul((_last_dec as u64) | 1)
+                    );
+                }
+            } else {
+                quote!()
             };
 
             let cold_attr = if random_range(0..100u8) < cold_pct {
@@ -298,7 +350,6 @@ fn build_dec_layers(
             // 包装壳子形态再抛一次硬币：具名函数 / 闭包+泛型蹦床，各占 50% 概率。
             let use_closure = random::<bool>();
             if use_closure {
-                let (frag, next_ident) = (layer.crypto.dec)(&ctx, param.clone());
                 let trampoline_fn = format_ident!("__dec_trampoline_{tag}");
                 let closure_ident = format_ident!("__dec_closure_{tag}");
                 let captured_ident = format_ident!("__dec_captured_{tag}");
@@ -308,28 +359,43 @@ fn build_dec_layers(
                     #cold_attr
                     #[inline(never)]
                     #[allow(unused_mut)]
-                    fn #trampoline_fn(f: &mut dyn ::core::ops::FnMut() -> #out_ty) -> #out_ty {
-                        ::core::hint::black_box((::core::hint::black_box(f))())
+                    fn #trampoline_fn(
+                        f: &mut dyn ::core::ops::FnMut(&mut u64, u64) -> #out_ty,
+                        k: &mut u64,
+                        g: u64,
+                    ) -> #out_ty {
+                        ::core::hint::black_box((::core::hint::black_box(f))(
+                            ::core::hint::black_box(k),
+                            ::core::hint::black_box(g),
+                        ))
                     }
                 });
                 body.extend(quote! {
                     #[allow(unused_mut)]
                     let mut #captured_ident: ::core::option::Option<#in_ty> =
                         ::core::option::Option::Some(#cur);
-                    let mut #closure_ident = move || -> #out_ty {
+                    let mut #closure_ident = move |
+                        #key_ref: &mut u64,
+                        #[allow(unused_variables)] #ghost_ident: u64,
+                    | -> #out_ty {
                         #[allow(unused_mut)]
                         let mut #param: #in_ty = unsafe {
                             #captured_ident.take().unwrap_unchecked()
                         };
-                        #key_storage_ast
+                        #[allow(unused_variables)]
+                        let #key_ident: u64 = *#key_ref;
                         #frag
+                        #advance_key_ast
                         ::core::hint::black_box(#next_ident)
                     };
-                    let mut #val = #trampoline_fn(::core::hint::black_box(&mut #closure_ident));
+                    let mut #val = #trampoline_fn(
+                        ::core::hint::black_box(&mut #closure_ident),
+                        ::core::hint::black_box(&mut #key_ident),
+                        ::core::hint::black_box(#ghost_ident),
+                    );
                 });
                 cur = val;
             } else {
-                let (frag, next_ident) = (layer.crypto.dec)(&ctx, param);
                 let dec_fn = format_ident!("__dec_layer_{tag}");
                 let val = format_ident!("__v_{tag}");
 
@@ -337,16 +403,26 @@ fn build_dec_layers(
                     #cold_attr
                     #[inline(never)]
                     #[allow(unused_mut)]
-                    fn #dec_fn(mut enc: #in_ty) -> #out_ty {
-                        #key_storage_ast
+                    fn #dec_fn(
+                        mut enc: #in_ty,
+                        #key_ref: &mut u64,
+                        #[allow(unused_variables)] #ghost_ident: u64,
+                    ) -> #out_ty {
+                        #[allow(unused_variables)]
+                        let #key_ident: u64 = *#key_ref;
                         #frag
+                        #advance_key_ast
                         ::core::hint::black_box(#next_ident)
                     }
                 });
                 body.extend(quote! {
                     #[allow(function_casts_as_integer)]
                     let _ = ::core::hint::black_box(#dec_fn) as usize;
-                    let mut #val = #dec_fn(#cur);
+                    let mut #val = #dec_fn(
+                        #cur,
+                        ::core::hint::black_box(&mut #key_ident),
+                        ::core::hint::black_box(#ghost_ident),
+                    );
                 });
                 cur = val;
             }
@@ -361,9 +437,23 @@ fn build_dec_layers(
                 ident_tag: tag,
             };
             let (frag, next_ident) = (layer.crypto.dec)(&ctx, cur);
+            let advance_key_ast = if enc_idx > 0 && pt > 0 {
+                quote! {
+                    let _last_dec = ::core::hint::black_box(
+                        unsafe { *#next_ident.as_slice().last().unwrap_unchecked() }
+                    );
+                    #key_ident = ::core::hint::black_box(
+                        #key_ident
+                            .wrapping_add(::core::hint::black_box(#ghost_ident))
+                            .wrapping_mul((_last_dec as u64) | 1)
+                    );
+                }
+            } else {
+                quote!()
+            };
             body.extend(quote! {
-                #key_storage_ast
                 #frag
+                #advance_key_ast
             });
             cur = next_ident;
             inline_count += 1;
@@ -428,7 +518,7 @@ const FOLD_GROUP_MAX: usize = 12;
 /// 一个待发射的块节点。
 ///
 /// `stmt` 既可以在根作用域执行，也可以被搬进任意层级的折叠函数：
-/// 两个作用域都提供同名的 `&mut MainTy` 与 `mut u8` ghost 变量，
+/// 两个作用域都提供同名的 `&mut MainTy` 与 `mut u64` ghost 变量，
 /// 因此块语句本身无需任何改写。
 struct ChunkNode {
     stmt: TokenStream2,
@@ -459,7 +549,7 @@ fn seal_chunk_group(
         #cold_attr
         #[inline(never)]
         #[allow(unused_mut)]
-        fn #fold_fn(#bytes: &mut #main_ty, mut #ghost: u8) -> u8 {
+        fn #fold_fn(#bytes: &mut #main_ty, mut #ghost: u64) -> u64 {
             #(#stmts)*
             ::core::hint::black_box(#ghost)
         }
@@ -517,19 +607,21 @@ fn fold_chunk_nodes(
     nodes
 }
 
+// `prefer_stack`：主容器优先走栈（仅在允许堆且载荷未触发 `STACK_BUDGET` 时生效）。
 pub(crate) fn build_obfuscated_bytes(
     mut input: Vec<u8>,
     tier: TierParams,
     allow_heap: bool,
-    stack_main_bytes: bool,
+    prefer_stack: bool,
 ) -> Result<TokenStream2, String> {
     let size = input.len();
     let id: u64 = random();
+    let ghost_init: u64 = random();
 
     let mut work_units: Vec<(Vec<u8>, bool)> = Vec::new();
     let mut i = 1;
     while !input.is_empty() {
-        let base = ((i as f64).powf(1.4)).ceil() as usize;
+        let base: usize = (i as f64).powf(1.4).ceil() as usize;
         let take_size = random_range({ 2 * base }..{ 8 * base }).min(input.len());
         let real_data: Vec<u8> = input.drain(..take_size).collect();
         let pt_len = real_data.len();
@@ -552,7 +644,7 @@ pub(crate) fn build_obfuscated_bytes(
     let bytes = format_ident!("__bytes_{id}");
     let ghost_state = format_ident!("__ghost_state_{id}");
 
-    let main_type_path = if allow_heap && (!stack_main_bytes || size >= STACK_BUDGET) {
+    let main_type_path = if allow_heap && (!prefer_stack || size >= STACK_BUDGET) {
         quote!(::obfstr2::types::buffer::HeapBytes)
     } else if size >= STACK_BUDGET && !allow_heap {
         return Err(format!(
@@ -567,22 +659,28 @@ pub(crate) fn build_obfuscated_bytes(
     let mut chunk_nodes: Vec<ChunkNode> = Vec::new();
     let mut chunk_inline_count: u32 = 0;
 
+    // 编译期镜像追踪运行期的 ghost_state 与主容器末尾字节
+    let mut sim_ghost: u64 = ghost_init;
+    let mut sim_last_byte: Option<u8> = None;
+
     for (seq, (chunk_data, is_junk)) in (1..).zip(work_units) {
         let pt_len = chunk_data.len();
+        let chunk_last_byte = chunk_data.last().copied();
         let tag = format!("{id}_{seq}");
         let bytes_chunk = format_ident!("__bytes_chunk_{tag}");
 
-        // 加密选层（垃圾块若在极端资源下无法加密则静默忽略）
-        let (ciphertext, layers) = match encrypt_layers(chunk_data, tier, &format!("chunk#{seq}")) {
-            Ok(res) => res,
-            Err(e) => {
-                if is_junk {
-                    continue;
-                } else {
-                    return Err(e);
+        // 加密选层（传入当前块入口处的 sim_ghost；垃圾块若在极端资源下无法加密则静默忽略）
+        let (ciphertext, layers) =
+            match encrypt_layers(chunk_data, tier, sim_ghost, &format!("chunk#{seq}")) {
+                Ok(res) => res,
+                Err(e) => {
+                    if is_junk {
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
                 }
-            }
-        };
+            };
         let ct_len = ciphertext.len();
 
         let peak = layers
@@ -633,6 +731,7 @@ pub(crate) fn build_obfuscated_bytes(
             &layers,
             &chunk_type_path,
             bytes_chunk.clone(),
+            &ghost_state,
             &tag,
             tier.wrap_pct,
             tier.cold_pct,
@@ -661,22 +760,30 @@ pub(crate) fn build_obfuscated_bytes(
                 chunk_prelude.extend(quote! {
                     #cold_attr
                     #[inline(never)]
-                    fn #trampoline_fn(f: &mut dyn ::core::ops::FnMut() -> #chunk_ret_ty) -> #chunk_ret_ty {
-                        ::core::hint::black_box((::core::hint::black_box(f))())
+                    fn #trampoline_fn(
+                        f: &mut dyn ::core::ops::FnMut(u64) -> #chunk_ret_ty,
+                        g: u64,
+                    ) -> #chunk_ret_ty {
+                        ::core::hint::black_box((::core::hint::black_box(f))(
+                            ::core::hint::black_box(g)
+                        ))
                     }
                 });
 
                 quote! {
-                    let mut #closure_ident = move || -> #chunk_ret_ty {
+                    let mut #closure_ident = move |#[allow(unused_variables)] #ghost_state: u64| -> #chunk_ret_ty {
                         #storage_ast
                         #dec_prelude
                         #dec_body
                         #integrity_check_ast
                         ::core::hint::black_box(#final_ident)
                     };
-                    let mut #val_chunk = #trampoline_fn(::core::hint::black_box(&mut #closure_ident));
+                    let mut #val_chunk = #trampoline_fn(
+                        ::core::hint::black_box(&mut #closure_ident),
+                        ::core::hint::black_box(#ghost_state),
+                    );
                     unsafe { #bytes.extend_from_slice(#val_chunk.as_slice()).unwrap_unchecked(); }
-                    #val_chunk.wipe_data();
+                    // 仅 drop 即可：Buffer 的 Drop 已对整段 capacity 执行 volatile 清零。
                     drop(#val_chunk);
                 }
             } else {
@@ -686,7 +793,7 @@ pub(crate) fn build_obfuscated_bytes(
                 chunk_prelude.extend(quote! {
                     #cold_attr
                     #[inline(never)]
-                    fn #chunk_fn() -> #chunk_ret_ty {
+                    fn #chunk_fn(#[allow(unused_variables)] #ghost_state: u64) -> #chunk_ret_ty {
                         #storage_ast
                         #dec_prelude
                         #dec_body
@@ -698,9 +805,9 @@ pub(crate) fn build_obfuscated_bytes(
                 quote! {
                     #[allow(function_casts_as_integer)]
                     let _ = ::core::hint::black_box(#chunk_fn) as usize;
-                    let mut #val_chunk = #chunk_fn();
+                    let mut #val_chunk = #chunk_fn(::core::hint::black_box(#ghost_state));
                     unsafe { #bytes.extend_from_slice(#val_chunk.as_slice()).unwrap_unchecked(); }
-                    #val_chunk.wipe_data();
+                    // 仅 drop 即可：Buffer 的 Drop 已对整段 capacity 执行 volatile 清零。
                     drop(#val_chunk);
                 }
             }
@@ -715,7 +822,7 @@ pub(crate) fn build_obfuscated_bytes(
                     #integrity_check_ast
                     let mut #val_chunk = #final_ident;
                     unsafe { #bytes.extend_from_slice(#val_chunk.as_slice()).unwrap_unchecked(); }
-                    #val_chunk.wipe_data();
+                    // 仅 drop 即可：Buffer 的 Drop 已对整段 capacity 执行 volatile 清零。
                     drop(#val_chunk);
                 }
             }
@@ -724,10 +831,19 @@ pub(crate) fn build_obfuscated_bytes(
         let mut node_stmt = node_stmt;
         node_stmt.extend(quote! {
             if let Some(&_last_byte) = #bytes.as_slice().last() {
-                #ghost_state = #ghost_state.wrapping_add(_last_byte);
+                #ghost_state = #ghost_state.wrapping_add(_last_byte as u64);
             }
         });
         chunk_nodes.push(ChunkNode { stmt: node_stmt });
+
+        // 同步推进编译期模拟状态：
+        // 真块将明文拼入主容器，更新主容器末字节；垃圾块被 wipe_data 清空为 0 长度，主容器末字节保持不变。
+        if !is_junk && let Some(b) = chunk_last_byte {
+            sim_last_byte = Some(b);
+        }
+        if let Some(last_b) = sim_last_byte {
+            sim_ghost = sim_ghost.wrapping_add(last_b as u64);
+        }
     }
 
     let roots = fold_chunk_nodes(
@@ -748,7 +864,7 @@ pub(crate) fn build_obfuscated_bytes(
         {
             #chunk_prelude
             let mut #raw_bytes = #main_ty::new();
-            let mut #ghost_state: u8 = 0_u8;
+            let mut #ghost_state: u64 = #ghost_init;
             {
                 #[allow(unused_variables)]
                 let #bytes: &mut #main_ty = &mut #raw_bytes;
@@ -869,7 +985,7 @@ mod tests {
                     if size > 0 {
                         fill_bytes(&mut data);
                     }
-                    match encrypt_layers(data, tier, "sim") {
+                    match encrypt_layers(data, tier, random::<u64>(), "sim") {
                         Ok((_, layers)) => {
                             let pre_padded = tier.pad_short && size < 16;
                             let mut vuln = 1.0_f64;

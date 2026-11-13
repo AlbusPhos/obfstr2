@@ -4,8 +4,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+// obfstr2-macros/src/tests/crypto.rs
 use crate::crypto::{CRYPTOS, LayerCtx};
 use crate::storage::STORAGES;
+use crate::tests::obfstr2_dep;
 use lib_unknown::dyntest::DnyRun;
 use lib_unknown::rand::core::{fill_bytes, random, shuffle};
 use quote::{format_ident, quote};
@@ -16,18 +18,6 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-
-fn obfstr2_dep(no_default: bool) -> String {
-    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
-    if no_default {
-        format!(
-            "obfstr2 = {{ path = {:?}, default-features = false }}",
-            root
-        )
-    } else {
-        format!("obfstr2 = {{ path = {:?} }}", root)
-    }
-}
 
 #[test]
 #[allow(clippy::expect_used)]

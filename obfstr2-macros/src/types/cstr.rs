@@ -11,13 +11,14 @@
 //!
 //! 设计：字面量载荷（不含 `\0`，编译期拒绝任何内部 NUL）追加结尾 `\0` 后
 //! 喂入 `build_obfuscated_bytes`（经 `b1`/`b2`/`b3` 档位入口），运行时解密为
-//! 字节容器后再经 `StackCStr` / `HeapCStr::try_from(&mut [u8])` 还原
-//! （首 NUL 截断 + 解密源擦除，调用方已处于 `unsafe` 块内、长度恒为载荷+1，
+//! 字节容器后再经 `StackCStr` / `HeapCStr::from_inner_with_nul` 零拷贝还原
+//! （首 NUL 截断，调用方已处于 `unsafe` 块内、长度恒为载荷+1，
 //! 故直接用 `unwrap_unchecked` 保持零运行时校验，与 `str.rs` 同策略）。
 //! `N` 含结尾 `\0`（`N >= 1`，空串即 `N = 1`）；返回自有容器，`Drop` 自动清零。
 //! 非 UTF-8 载荷请用 `b"..."` 形态（`CStr` 只校验 NUL 语义，不校验 UTF-8）。
 
-use super::{b1, b2, b3, want_heap};
+use super::bytes::b2_forced;
+use super::{b1, b3, want_heap};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
@@ -34,17 +35,19 @@ pub fn cs1(payload: Vec<u8>) -> Result<TokenStream2, String> {
 
     Ok(quote! {
         {
-            let mut bytes = #ts;
-            unsafe { ::obfstr2::types::cstr::StackCStr::<#size>::try_from(bytes.as_mut_slice()).unwrap_unchecked() }
+            let bytes = #ts;
+            unsafe { ::obfstr2::types::cstr::StackCStr::<#size>::from_inner_with_nul(bytes).unwrap_unchecked() }
         }
     })
 }
 
 pub fn cs2(payload: Vec<u8>) -> Result<TokenStream2, String> {
     let size = payload.len() + 1;
-    let ts = b2(with_nul(payload))?;
+    // 主容器族必须与 b2 内部选择一致，才能用 from_inner_with_nul 零拷贝消费。
+    let heap = cfg!(feature = "alloc") && (want_heap() || size >= crate::core::STACK_BUDGET);
+    let ts = b2_forced(with_nul(payload), heap)?;
 
-    let main_type_path = if want_heap() {
+    let main_type_path = if heap {
         quote!(::obfstr2::types::cstr::HeapCStr)
     } else {
         quote!(::obfstr2::types::cstr::StackCStr)
@@ -52,8 +55,8 @@ pub fn cs2(payload: Vec<u8>) -> Result<TokenStream2, String> {
 
     Ok(quote! {
         {
-            let mut bytes = #ts;
-            unsafe { #main_type_path::<#size>::try_from(bytes.as_mut_slice()).unwrap_unchecked() }
+            let bytes = #ts;
+            unsafe { #main_type_path::<#size>::from_inner_with_nul(bytes).unwrap_unchecked() }
         }
     })
 }
@@ -70,8 +73,8 @@ pub fn cs3(payload: Vec<u8>) -> Result<TokenStream2, String> {
 
     Ok(quote! {
         {
-            let mut bytes = #ts;
-            unsafe { #main_type_path::<#size>::try_from(bytes.as_mut_slice()).unwrap_unchecked() }
+            let bytes = #ts;
+            unsafe { #main_type_path::<#size>::from_inner_with_nul(bytes).unwrap_unchecked() }
         }
     })
 }

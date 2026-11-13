@@ -26,7 +26,13 @@ pub fn b1(input: Vec<u8>) -> Result<TokenStream2, String> {
 }
 
 pub fn b2(input: Vec<u8>) -> Result<TokenStream2, String> {
-    build_obfuscated_bytes(input, TIER_BALANCED, cfg!(feature = "alloc"), want_heap())
+    build_obfuscated_bytes(input, TIER_BALANCED, cfg!(feature = "alloc"), !want_heap())
+}
+
+/// 供 `cs2!` 等需要零拷贝消费主容器的包装复用：由调用方一次性决定主容器族，
+/// 避免 `b2` 内部与包装层各自随机导致具体类型不匹配。
+pub(crate) fn b2_forced(input: Vec<u8>, heap: bool) -> Result<TokenStream2, String> {
+    build_obfuscated_bytes(input, TIER_BALANCED, cfg!(feature = "alloc"), !heap)
 }
 
 pub fn b3(input: Vec<u8>) -> Result<TokenStream2, String> {

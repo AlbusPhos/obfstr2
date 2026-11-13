@@ -28,7 +28,7 @@ pub(crate) fn wrap_wide(
             let mut __wide_buf = #main_type_path::<#n>::new();
             let __wide_res = __wide_buf
                 .extend_from_zeroable_primitive_slice_le(&*__wide_bytes);
-            __wide_bytes.wipe_data();
+            // 仅 drop 即可：Buffer 的 Drop 已对整段 capacity 执行 volatile 清零。
             drop(__wide_bytes);
             unsafe { __wide_res.unwrap_unchecked() };
             __wide_buf

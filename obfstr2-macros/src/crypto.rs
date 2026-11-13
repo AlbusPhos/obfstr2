@@ -188,7 +188,7 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 let key = ctx.key;
                 for (i, c) in chunk.iter_mut().enumerate() {
                     let k = (lib_unknown::crypto::core::mix::mix64(key ^ i as u64) as u8) | 1;
-                    *c = c.wrapping_mul(lib_unknown::crypto::core::inv_mul8(k));
+                    *c = c.wrapping_mul(lib_unknown::crypto::core::inv_mul::inv_mul8(k));
                 }
                 ctx.out_size = chunk.len();
                 chunk
@@ -376,13 +376,9 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 let pt = ctx.in_size;
                 let out_ident = format_ident!("__tmp_{}", ctx.ident_tag);
                 let ast = quote! {
-                    let mut #out_ident = #path::<#pt>::new();
-                    // 预填长度：imse2 通过 `as_mut_slice()` 判断输出容量，随后会整体覆写。
-                    unsafe {
-                        #out_ident
-                            .extend_from_slice(&#in_ident.as_slice()[..#pt])
-                            .unwrap_unchecked();
-                    }
+                    // 只需设置长度：imse2 通过 `as_mut_slice()` 判断输出容量，随后会整体覆写。
+                    // 使用 new_zeroed 避免仅为了预填长度而整块拷贝输入。
+                    let mut #out_ident = unsafe { #path::<#pt>::new_zeroed(#pt).unwrap_unchecked() };
 
                     let key = ::core::hint::black_box(#key as u64);
                     let iv = ::core::hint::black_box(#iv as u64);
@@ -536,12 +532,8 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 let tag = ctx.ident_tag.clone();
                 let out_ident = format_ident!("__tmp_{tag}"); // 长度改变需要更新容器
                 let ast = quote! {
-                    let mut #out_ident = #path::<#pt>::new();
-                    unsafe {
-                        #out_ident
-                            .extend_from_slice(&#in_ident.as_slice()[..#pt])
-                            .unwrap_unchecked();
-                    }
+                    // 只需设置长度：pkcs7_unpad 通过 `as_mut_slice()` 判断输出容量，随后会整体覆写。
+                    let mut #out_ident = unsafe { #path::<#pt>::new_zeroed(#pt).unwrap_unchecked() };
 
                     let align = ::core::hint::black_box(16usize);
                     let _ = ::core::hint::black_box(
@@ -698,8 +690,8 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 let (key, iv) = (ctx.key_ident.clone(), ctx.iv);
                 let ast = quote! {
                     {
-                        let key = ::core::hint::black_box(#key as u64);
-                        let iv = ::core::hint::black_box(#iv as u64);
+                        let key = ::core::hint::black_box(#key);
+                        let iv = ::core::hint::black_box(#iv);
 
                         let _ = ::obfstr2::crypto::chacha20::chacha20_1(
                             #in_ident.as_mut_slice(),
@@ -715,7 +707,7 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
             support: |_len| true,
             security: 36,
             latency: 37,
-            // 密码学强度满分，但白盒威胁模型下若 ARX 轮特征被识别，攻击者仅需复刻内联的 mix64 KDF 即可调标准库解密
+            // 密码学强度满分，但白盒威胁模型下若 ARX 轮特征被识别.
             metrics: CryptoMetrics {
                 attack_complexity: 62,
                 cognitive_load: 50,

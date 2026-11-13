@@ -8,7 +8,8 @@
 //!
 
 use lib_unknown::encoding::base64::base64_encode_vec;
-use lib_unknown::rand::core::{fill_bytes, random, random_range};
+use lib_unknown::encoding::hb2::{DEFAULT_TABLE as HB2_TABLE, hb2_encode_to_vec};
+use lib_unknown::rand::core::{fill_bytes, random, random_range, shuffle};
 use proc_macro2::{
     Ident as Ident2, Literal as Literal2, Span as Span2, TokenStream as TokenStream2,
 };
@@ -26,9 +27,6 @@ pub(crate) struct Storage {
     pub(crate) ast: fn(&Ident2, &TokenStream2, &[u8]) -> TokenStream2,
     // 判断当前 chunk 长度是否适合此策略
     pub(crate) support: fn(usize) -> bool,
-    // 抗分析能力（如伪装度，打断静态扫描的能力） 0~100
-    #[allow(dead_code)]
-    pub(crate) security: u8,
     // 运行时恢复数据的性能开销 0~100
     pub(crate) latency: u8,
 }
@@ -41,25 +39,18 @@ fn hex_str_decode(
     const_name: &Ident2,
 ) -> TokenStream2 {
     quote! {
-        let mut #ident = #family::<#size>::new();
+        let mut #ident = unsafe { #family::<#size>::new_zeroed(#size).unwrap_unchecked() };
         {
             let mut _written = 0usize;
-            let mut _buf = #family::<16>::new();
-            unsafe {
-                _buf.extend_from_slice(&[0u8; 16]).unwrap_unchecked();
-            }
-
+            // 直接解码到目标容器的字节视图：省掉 scratch 容器与其拷贝 / 擦除。
             for &s in ::core::hint::black_box(#const_name) {
                 if _written >= #size { break; }
                 let _rem = #size - _written;
                 let _take = if _rem < 16 { _rem } else { 16 };
                 let (_, _n) = ::obfstr2::encoding::hex::hex_decode(
                     ::core::hint::black_box(s.as_bytes()),
-                    &mut _buf[.._take],
+                    &mut #ident.as_mut_byte_slice()[_written.._written + _take],
                 );
-                unsafe {
-                    #ident.extend_from_slice(&_buf[.._n]).unwrap_unchecked();
-                }
                 _written += _n;
             }
         }
@@ -101,7 +92,6 @@ macro_rules! int_array_storage {
                 }
             },
             support: |size| (128..=4096).contains(&size),
-            security: 3,
             latency: 10,
         }
     };
@@ -160,6 +150,105 @@ const PEM_PROFILES: &[PemProfile] = &[
     },
 ];
 
+/// HB2 空白隐写的伪特征字符串表。
+///
+/// 来源为 OpenSSL / 常见系统库与程序中的可打印片段，统一裁剪到 ≤30 字节；
+/// 不得包含 HB2 符号表字节（默认 `\0` / `\n`），否则会被解码器误读为比特。
+const HB2_DECOYS: &[&str] = &[
+    "type=%d",
+    "TLS %s extension \"%s\"",
+    "TLS ext \"%s\" (id=%d)",
+    "error setting random cookie",
+    "Error calculating HMAC-SHA1",
+    "%s: %zu-byte buffer too large",
+    "matched peer raw public key",
+    "No peer cert or raw pubkey",
+    "Call to SSL_CONF_cmd failed",
+    "# SSL/TLS secrets log file",
+    "No %s certificate CA names",
+    "Acceptable %s CA names",
+    "Secure Renegotiation IS%s",
+    "TLS forbids renegotiation",
+    "ALPN negotiation",
+    "bad_cert_status_response",
+    "BIO_ADDRINFO assertion failed",
+    "Can't bind %s address",
+    "SRP param N and g unknown",
+    "SRP parameters set",
+    "Failed to init SRP verifier",
+    "Cannot init SRP verifier file",
+    "0123456789ABCDEF",
+    "save_free_certs",
+    "handle_opt_geninfo",
+    "set_fallback_pubkey",
+    "setup_request_ctx",
+    "setup_protection_ctx",
+    "setup_verification_ctx",
+    "write_PKIMESSAGE",
+    "read_PKIMESSAGE",
+    "read_write_req_resp",
+    "setup_client_ctx",
+    "./0123456789ABCDEFGHIJKLMNOPQR",
+    "Lets print some clear text",
+    "GET %s HTTP/1.0",
+    "This is a key...",
+    "app_http_get_asn1",
+    "asn1=SEQUENCE:LDAPMessage",
+    "messageID=INTEGER:1",
+    "extendedReq=EXPLICIT:23A",
+    "9049f5913b5bd5f8730cc1ce",
+    ".note.gnu.build-id",
+    ".note.gnu.property",
+    "libvlc",
+    "vlc_interface",
+    "SSL_CTX_new",
+    "ERR_clear_error",
+];
+
+/// 把密文编码为 HB2 空白符号串，并随机插入伪特征字符串（约为编码数据的 10%）。
+///
+/// 插入内容全部为表外可打印字节，`hb2_decode` 的宽松模式会自动跳过；
+/// 为保证极短载荷也有伪装文本，预算不足一条字符串时仍至少插入一条。
+fn hb2_storage_text(data: &[u8]) -> String {
+    debug_assert!(
+        HB2_DECOYS
+            .iter()
+            .all(|d| d.len() <= 30 && !d.as_bytes().iter().any(|b| HB2_TABLE.contains(b))),
+        "HB2 decoys must be <=30 bytes and must not contain table symbols"
+    );
+
+    let mut out = hb2_encode_to_vec(data, HB2_TABLE);
+    let budget = out.len() / 10;
+    let mut inserted = 0usize;
+
+    let mut order: Vec<usize> = (0..HB2_DECOYS.len()).collect();
+    order = shuffle(order);
+
+    let mut cursor = 0usize;
+    while inserted < budget {
+        let decoy = HB2_DECOYS[order[cursor % order.len()]];
+        cursor += 1;
+
+        let cost = decoy.len() + 1; // + 一个空格分隔符
+        if inserted > 0 && inserted + cost > budget {
+            break;
+        }
+
+        let pos = random_range(0..=out.len());
+        out.splice(pos..pos, decoy.bytes().chain(::core::iter::once(b' ')));
+        inserted += cost;
+    }
+
+    if inserted == 0 {
+        let decoy = HB2_DECOYS[random_range(0..HB2_DECOYS.len())];
+        let pos = random_range(0..=out.len());
+        out.splice(pos..pos, decoy.bytes().chain(::core::iter::once(b' ')));
+    }
+
+    // HB2 符号与挑选出的伪特征串均为 ASCII，因此必定是合法 UTF-8。
+    String::from_utf8(out).unwrap_or_else(|_| unreachable!("HB2 symbols and decoys are ASCII"))
+}
+
 pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
     vec![
         // 原始字节切片策略
@@ -180,11 +269,32 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                 }
             },
             support: |_| true,
-            security: 1,
             latency: 1,
         },
         int_array_storage!(U64, u64, u64_suffixed, 8),
         int_array_storage!(U128, u128, u128_suffixed, 16),
+        // HB2 空白字符隐写：每个密文字节展开为 8 个 \0/\n 符号，随机夹入伪特征字符串（熵稀释专用）
+        Storage {
+            name: "hb2",
+            ast: |ident, family, data| {
+                let size = data.len();
+                let text = hb2_storage_text(data);
+                let encoded_literal = Literal2::string(&text);
+                let const_name = format_ident!("__STATIC_HB2_{}", random::<u32>());
+                quote! {
+                    static #const_name: &str = #encoded_literal;
+                    let mut #ident = unsafe { #family::<#size>::new_zeroed(#size).unwrap_unchecked() };
+                    let (_, _hb2_written) = ::obfstr2::encoding::hb2::hb2_decode(
+                        ::core::hint::black_box(#const_name.as_bytes()),
+                        #ident.as_mut_byte_slice(),
+                        ::obfstr2::encoding::hb2::DEFAULT_TABLE,
+                    );
+                    ::core::hint::black_box(_hb2_written);
+                }
+            },
+            support: |size| (8..=8192).contains(&size),
+            latency: 85,
+        },
         // MAC 地址隐写存储策略
         Storage {
             name: "mac",
@@ -211,8 +321,7 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                 }
             },
             support: |size| (6..=386).contains(&size),
-            security: 30,
-            latency: 10,
+            latency: 80,
         },
         // UUID 隐写存储策略
         Storage {
@@ -255,8 +364,7 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                 }
             },
             support: |size| (8..=512).contains(&size),
-            security: 30,
-            latency: 10,
+            latency: 68,
         },
         // IPv6 隐写存储策略
         Storage {
@@ -299,8 +407,7 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                 }
             },
             support: |size| (8..=512).contains(&size),
-            security: 30,
-            latency: 10,
+            latency: 71,
         },
         // PEM 格式拟真存储策略（单连续字符串 + 抗 LLVM DCE 优化）
         Storage {
@@ -351,13 +458,9 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                 quote! {
                     // 单一连续字符串常量，强制分配在一段连续的 .rodata 空间内
                     static #const_name: &str = #pem_str;
-                    let mut #ident = #family::<#size>::new();
+                    let mut #ident = unsafe { #family::<#size>::new_zeroed(#size).unwrap_unchecked() };
                     {
                         let mut _written = 0usize;
-                        let mut _buf = #family::<48>::new();
-                        unsafe {
-                            _buf.extend_from_slice(&[0u8; 48]).unwrap_unchecked();
-                        }
 
                         // 将整个连续 PEM 切片通过 black_box 保护
                         let _pem_bytes = ::core::hint::black_box(#const_name.as_bytes());
@@ -382,87 +485,19 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
                             let _rem = #size - _written;
                             let _take = if _rem < 48 { _rem } else { 48 };
 
+                            // 直接解码到目标容器的字节视图：省掉 scratch 容器与其拷贝 / 擦除。
                             let (_, _n) = ::obfstr2::encoding::base64::base64_decode(
                                 ::core::hint::black_box(_line),
-                                &mut _buf[.._take],
+                                &mut #ident.as_mut_byte_slice()[_written.._written + _take],
                             );
-                            unsafe {
-                                #ident.extend_from_slice(&_buf[.._n]).unwrap_unchecked();
-                            }
                             _written += _n;
                             if _written >= #size { break 'pem_outer; }
                         }
                     }
                 }
             },
-            support: |size| (128..=10240).contains(&size),
-            security: 45,
-            latency: 12,
+            support: |size| (128..=8192).contains(&size),
+            latency: 66,
         },
     ]
 });
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use lib_unknown::dyntest::DnyRun;
-    use lib_unknown::rand::core::fill_bytes;
-    use quote::{format_ident, quote};
-    use std::fs;
-    use std::time::Duration;
-
-    fn obfstr2_dep() -> String {
-        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
-        format!("obfstr2 = {{ path = {:?} }}", root)
-    }
-
-    #[test]
-    #[ignore = "需构建 dyntest 临时 guest 工程（含依赖拉取），约数秒"]
-    fn test_storages() {
-        let mut runner = DnyRun::new("fn main() {}", &obfstr2_dep());
-        runner.release(true);
-        let ret = runner.build(Some(Duration::from_secs(10)));
-        if !ret.ok {
-            println!("{}", ret);
-            panic!();
-        }
-
-        let mut data = vec![0u8; 1024];
-        fill_bytes(data.as_mut());
-
-        let template = r#"
-fn main() {
-[[d]]
-for b in &*d {
-    print!("{:02x}", b);
-}
-for _ in 0..core::hint::black_box(100000) {
-[[d]]
-core::hint::black_box(d);
-}
-}"#;
-        let code = |f: fn(&Ident2, &TokenStream2, &[u8]) -> TokenStream2, d| {
-            f(
-                &format_ident!("d"),
-                &quote!(::obfstr2::types::buffer::StackBytes),
-                d,
-            )
-            .to_string()
-        };
-        for storage in &*STORAGES {
-            let main = template.replace("[[d]]", &code(storage.ast, &data));
-            runner.reset_main_code(&main);
-            let ret = runner.run(Some(Duration::from_secs(3)));
-            let expected_hex: String = data.iter().map(|b| format!("{:02x}", b)).collect();
-            assert_eq!(ret.stdout.trim(), expected_hex, "!!!!\n{ret}");
-            println!(
-                "[[{}]] {} kb",
-                storage.name,
-                fs::metadata(runner.bin_path())
-                    .map(|m| m.len() / 1024)
-                    .unwrap_or(0)
-            );
-            println!("{}", ret);
-        }
-    }
-}
