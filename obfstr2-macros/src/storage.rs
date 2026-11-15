@@ -219,7 +219,7 @@ fn hb2_storage_text(data: &[u8]) -> (String, [u8; 2]) {
     }
 
     // 因为 HB2 的基础字符（\0, \n, ' '）和插入的 snippet 均是合法 UTF-8，且在字符边界插入，安全无损
-    let result_str = String::from_utf8_lossy(&*out).into_owned();
+    let result_str = String::from_utf8_lossy(&out).into_owned();
 
     (result_str, table)
 }
