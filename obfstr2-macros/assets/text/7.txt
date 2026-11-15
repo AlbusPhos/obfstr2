@@ -1,0 +1,2 @@
+Operation on NULL destination buffer
+constant_time_declassify_int(aws_lc_0_45_0_bn_in_range_words(r->d, min_inclusive, max_exclusive->d, words))

@@ -1,6 +1,6 @@
 [package]
 name = "obfstr2-macros"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 resolver = "2"
 rust-version = "1.92"
@@ -21,14 +21,16 @@ proc-macro = true
 syn = { version = "3", features = ["full", "derive", "visit-mut"] }
 quote = "1.0"
 proc-macro2 = "1.0"
-lib-unknown = { version = "=0.4.1", default-features = false, features = ["rand", "crypto", "alloc", "encoding-base64", "encoding-hb2"] }
+lib-unknown = { version = "=0.4.2", default-features = false, features = ["rand", "crypto", "alloc", "encoding-base64", "encoding-hb2"] }
+include_dir = "0.7.4"
 
 [dev-dependencies]
-lib-unknown = { version = "=0.4.1", default-features = false, features = ["rand", "crypto", "dyntest", "encoding-base64", "encoding-hb2"]}
+lib-unknown = { version = "=0.4.2", default-features = false, features = ["rand", "crypto", "dyntest", "encoding-base64", "encoding-hb2"]}
 
 [features]
 default = []
 alloc = []
+anti-disassembly = []
 # 栈预算控制：同时启用多个时取最大档；未指定时默认 4 KiB
 budget-1k = []
 budget-4k = []

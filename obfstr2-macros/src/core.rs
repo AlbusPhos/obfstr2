@@ -42,11 +42,11 @@ pub(crate) const STACK_BUDGET: usize = if cfg!(feature = "budget-8m") {
 };
 
 /// 强度档位公共参数（延迟上限 / 组合安全度下限 / 原语叠加倍率 / 逐层非内联包装概率 / 短块预填充）。
+#[allow(unused)]
 #[derive(Clone, Copy)]
 pub(crate) struct TierParams {
     pub(crate) max_latency: u8,
     pub(crate) min_security: u8,
-    pub(crate) magnification: u8,
     /// 包装概率 0..=100（`build_dec_layers` 按层抛硬币）。
     pub(crate) wrap_pct: u8,
     /// 垃圾块填充概率（0~100 百分比；按 chunk 掷骰；超出 100 视为恒插）。
@@ -54,39 +54,49 @@ pub(crate) struct TierParams {
     pub(crate) cold_pct: u8,
     /// 短块强制预填充：初始块长 < 16B 时是否前置 `pkcs7_16` 填充（不计入 op_count 与组合安全度）。
     pub(crate) pad_short: bool,
+
+    pub(crate) anti_disasm_pct: u8,
+    pub(crate) anti_disasm_count_range: (u8, u8),
+    pub(crate) anti_disasm_garbage_range: (u8, u8),
 }
 
 /// 低延迟档（`s1` / `b1` / `i1` / `fl1` / `cs1`）：纯栈，`no_std` 可用。
 pub(crate) const TIER_LOW: TierParams = TierParams {
     max_latency: 30,
     min_security: 7,
-    magnification: 1,
     wrap_pct: 8,
     junk_pct: 2,
     cold_pct: 10,
     pad_short: false,
+    anti_disasm_pct: 5,
+    anti_disasm_count_range: (1, 1),
+    anti_disasm_garbage_range: (1, 5),
 };
 
 /// 均衡档（`s2` / `b2` / `i2` / `fl2` / `cs2`）：堆栈随机。
 pub(crate) const TIER_BALANCED: TierParams = TierParams {
     max_latency: 80,
     min_security: 63,
-    magnification: 1,
     wrap_pct: 50,
     junk_pct: 18,
     cold_pct: 20,
     pad_short: true,
+    anti_disasm_pct: 40,
+    anti_disasm_count_range: (1, 2),
+    anti_disasm_garbage_range: (4, 10),
 };
 
 /// 高强度档（`s3` / `b3` / `i3` / `fl3` / `cs3`）：`alloc` 下主容器走堆。
 pub(crate) const TIER_HIGH: TierParams = TierParams {
     max_latency: 100,
     min_security: 93,
-    magnification: 4,
     wrap_pct: 85,
     junk_pct: 35,
     cold_pct: 50,
     pad_short: true,
+    anti_disasm_pct: 80,
+    anti_disasm_count_range: (2, 3),
+    anti_disasm_garbage_range: (8, 15),
 };
 
 fn available_crypto(chunk_size: usize, max_latency: u8) -> Vec<Crypto> {
@@ -161,8 +171,8 @@ fn apply_single_layer(
     ))
 }
 
-/// 加密选层：随机 `1..3 × magnification` 个起步，组合安全度
-/// （`1 - Π(1 - security)`）达标即停；真 chunk 与垃圾块共用，保证过滤口径一致。
+/// 加密选层：随机 `1..3` 个基础层起步，组合安全度（`1 - Π(1 - security)`）
+/// 达到 `tier.min_security` 即停；真 chunk 与垃圾块共用，保证过滤口径一致。
 ///
 /// 整个 chunk 仅生成一个根密钥种子，第 `i (i >= 1)` 层在编译期通过
 /// `key.wrapping_mul(inv_mul64((last_dec as u64) | 1)).wrapping_sub(ghost_state)` 逆向派生密钥，
@@ -208,8 +218,7 @@ fn encrypt_layers(
         data = push_layer(pkcs7, data, &mut layers)?;
     }
 
-    let op_count = random_range(1..3_u8).wrapping_mul(tier.magnification.max(1)) as usize;
-    // 目标总层数 = 已前置的预填充层数（0 或 1）+ 正式加密所需最少层数 op_count
+    let op_count = random_range(1..3usize);
     let target_layers = layers.len() + op_count;
     let mut combined_vulnerability = 1.0_f64;
     let mut current_combined_security = 0_u8;
@@ -270,6 +279,24 @@ fn gen_key_storage(key: u64, key_ident: &Ident2, tag: &str, max_latency: u8) -> 
     }
 }
 
+/// 生成反反汇编宏调用 AST
+fn gen_anti_disasm_ast(tier: &TierParams) -> TokenStream2 {
+    if !cfg!(feature = "anti-disassembly") || tier.anti_disasm_pct == 0 {
+        return TokenStream2::new();
+    }
+
+    if random_range(0..100u8) >= tier.anti_disasm_pct {
+        return TokenStream2::new();
+    }
+
+    let count = random_range(tier.anti_disasm_count_range.0..=tier.anti_disasm_count_range.1);
+    let garbage = random_range(tier.anti_disasm_garbage_range.0..=tier.anti_disasm_garbage_range.1);
+
+    quote! {
+        ::obfstr2::anti_disassembly!(count = #count, garbage = #garbage);
+    }
+}
+
 /// 逆序解密 fold：`(AST, Ident_out) = dec(ctx, Ident_in)` 串联。
 /// 每个 chunk 仅声明一个初始密钥，每层解密后混入 `ghost_ident` 并通过
 /// `.wrapping_add(ghost_state).wrapping_mul((last_dec as u64) | 1)` 推进。
@@ -280,9 +307,7 @@ fn build_dec_layers(
     entry: Ident2,
     ghost_ident: &Ident2,
     tag_prefix: &str,
-    wrap_pct: u8,
-    cold_pct: u8,
-    max_latency: u8,
+    tier: &TierParams,
 ) -> (TokenStream2, TokenStream2, Ident2) {
     let mut prelude = TokenStream2::new();
     let mut body = TokenStream2::new();
@@ -299,7 +324,7 @@ fn build_dec_layers(
         entry_layer.key,
         &key_ident,
         tag_prefix,
-        max_latency,
+        tier.max_latency,
     ));
 
     for (rev_pos, layer) in layers.iter().rev().enumerate() {
@@ -307,9 +332,10 @@ fn build_dec_layers(
         let tag = format!("{tag_prefix}_{enc_idx}");
         let ct = layer.ct_len;
         let pt = layer.pt_len;
+        let anti_disasm = gen_anti_disasm_ast(tier);
 
         // 档位控制的非内联概率 + 单调累积：0=全内联，>=100=全包装。
-        let wrap = random_range(0..100u8) < effective_wrap_pct(wrap_pct, inline_count);
+        let wrap = random_range(0..100u8) < effective_wrap_pct(tier.wrap_pct, inline_count);
         if wrap {
             let in_ty = quote!(#family<#ct>);
             let out_ty = quote!(#family<#pt>);
@@ -341,7 +367,7 @@ fn build_dec_layers(
                 quote!()
             };
 
-            let cold_attr = if random_range(0..100u8) < cold_pct {
+            let cold_attr = if random_range(0..100u8) < tier.cold_pct {
                 quote!(#[cold])
             } else {
                 quote!()
@@ -364,6 +390,7 @@ fn build_dec_layers(
                         k: &mut u64,
                         g: u64,
                     ) -> #out_ty {
+                        #anti_disasm
                         ::core::hint::black_box((::core::hint::black_box(f))(
                             ::core::hint::black_box(k),
                             ::core::hint::black_box(g),
@@ -408,6 +435,7 @@ fn build_dec_layers(
                         #key_ref: &mut u64,
                         #[allow(unused_variables)] #ghost_ident: u64,
                     ) -> #out_ty {
+                        #anti_disasm
                         #[allow(unused_variables)]
                         let #key_ident: u64 = *#key_ref;
                         #frag
@@ -452,6 +480,7 @@ fn build_dec_layers(
                 quote!()
             };
             body.extend(quote! {
+                #anti_disasm
                 #frag
                 #advance_key_ast
             });
@@ -534,22 +563,24 @@ fn seal_chunk_group(
     main_ty: &TokenStream2,
     bytes: &Ident2,
     ghost: &Ident2,
-    cold_pct: u8,
     prelude: &mut TokenStream2,
+    tier: &TierParams,
 ) -> ChunkNode {
     let fold_fn = format_ident!("__fold_{id}_{depth}_{idx}");
     let stmts = group.iter().map(|node| &node.stmt);
-    let cold_attr = if random_range(0..100u8) < cold_pct {
+    let cold_attr = if random_range(0..100u8) < tier.cold_pct {
         quote!(#[cold])
     } else {
         quote!()
     };
+    let anti_disasm = gen_anti_disasm_ast(tier);
 
     prelude.extend(quote! {
         #cold_attr
         #[inline(never)]
         #[allow(unused_mut)]
         fn #fold_fn(#bytes: &mut #main_ty, mut #ghost: u64) -> u64 {
+            #anti_disasm
             #(#stmts)*
             ::core::hint::black_box(#ghost)
         }
@@ -576,8 +607,8 @@ fn fold_chunk_nodes(
     main_ty: &TokenStream2,
     bytes: &Ident2,
     ghost: &Ident2,
-    cold_pct: u8,
     prelude: &mut TokenStream2,
+    tier: &TierParams,
 ) -> Vec<ChunkNode> {
     let mut depth = 0usize;
     while nodes.len() > FOLD_GROUP_MAX {
@@ -590,11 +621,10 @@ fn fold_chunk_nodes(
             let group: Vec<ChunkNode> = groups.by_ref().take(cap).collect();
             match group.len() {
                 0 => break,
-                // 尾部单节点不套冗余函数壳，直接晋升到下一轮与邻居合并。
                 1 => next.extend(group),
                 _ => {
                     next.push(seal_chunk_group(
-                        group, id, depth, idx, main_ty, bytes, ghost, cold_pct, prelude,
+                        group, id, depth, idx, main_ty, bytes, ghost, prelude, tier,
                     ));
                     idx += 1;
                 }
@@ -733,9 +763,7 @@ pub(crate) fn build_obfuscated_bytes(
             bytes_chunk.clone(),
             &ghost_state,
             &tag,
-            tier.wrap_pct,
-            tier.cold_pct,
-            tier.max_latency,
+            &tier,
         );
 
         let integrity_check_ast = gen_integrity_check(is_junk, &final_ident);
@@ -852,24 +880,29 @@ pub(crate) fn build_obfuscated_bytes(
         &main_ty,
         &bytes,
         &ghost_state,
-        tier.cold_pct,
         &mut chunk_prelude,
+        &tier,
     );
     let mut chunk_body = TokenStream2::new();
     for node in roots {
         chunk_body.extend(node.stmt);
     }
 
+    let anti_disasm1 = gen_anti_disasm_ast(&tier);
+    let anti_disasm2 = gen_anti_disasm_ast(&tier);
+
     Ok(quote! {
         {
             #chunk_prelude
+            #anti_disasm1
+
             let mut #raw_bytes = #main_ty::new();
             let mut #ghost_state: u64 = #ghost_init;
-            {
-                #[allow(unused_variables)]
-                let #bytes: &mut #main_ty = &mut #raw_bytes;
-                #chunk_body
-            }
+            #[allow(unused_variables)]
+            let #bytes: &mut #main_ty = &mut #raw_bytes;
+            #chunk_body
+
+            #anti_disasm2
             ::core::hint::black_box(#ghost_state);
             #raw_bytes
         }
@@ -904,7 +937,15 @@ mod tests {
         };
 
         let mut prelude = TokenStream2::new();
-        let roots = fold_chunk_nodes(make(1), 1, &main_ty, &bytes, &ghost, 0, &mut prelude);
+        let roots = fold_chunk_nodes(
+            make(1),
+            1,
+            &main_ty,
+            &bytes,
+            &ghost,
+            &mut prelude,
+            &TIER_LOW,
+        );
         assert_eq!(roots.len(), 1);
         assert!(
             !prelude.to_string().contains("__fold_"),
@@ -912,7 +953,15 @@ mod tests {
         );
 
         let mut prelude = TokenStream2::new();
-        let roots = fold_chunk_nodes(make(1000), 2, &main_ty, &bytes, &ghost, 0, &mut prelude);
+        let roots = fold_chunk_nodes(
+            make(1000),
+            2,
+            &main_ty,
+            &bytes,
+            &ghost,
+            &mut prelude,
+            &TIER_LOW,
+        );
         assert!(
             roots.len() <= FOLD_GROUP_MAX,
             "根节点数应收敛到 {FOLD_GROUP_MAX}"
@@ -957,12 +1006,8 @@ mod tests {
             println!(
                 "\n{:=^100}",
                 format!(
-                    " Tier {} (max_latency={}, min_security={}, magnification={}, pad_short={}) ",
-                    case.name,
-                    tier.max_latency,
-                    tier.min_security,
-                    tier.magnification,
-                    tier.pad_short
+                    " Tier {} (max_latency={}, min_security={}, pad_short={}) ",
+                    case.name, tier.max_latency, tier.min_security, tier.pad_short
                 )
             );
 

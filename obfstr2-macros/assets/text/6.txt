@@ -1,0 +1,3 @@
+__vsnprintf_chk
+strchr
+__assert_fail

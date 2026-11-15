@@ -1,6 +1,6 @@
 [package]
 name = "obfstr2"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 resolver = "2"
 rust-version = "1.92"
@@ -16,13 +16,22 @@ categories = ["no-std", "embedded"]
 
 
 [dependencies]
-obfstr2-macros = { version = "=0.4.0", path = "obfstr2-macros" }
-lib-unknown = { version = "=0.4.1", default-features = false, features = ["crypto", "types", "encoding"] }
+obfstr2-macros = { version = "=0.4.1", path = "obfstr2-macros" }
+lib-unknown = { version = "=0.4.2", default-features = false, features = ["crypto", "types", "encoding"] }
+anti-disassembly = { version = "0.1.0", optional = true, features = ["red-zone-safety"] }
 
 [features]
 default = [
+    "alloc",
+    "anti-disassembly"
+]
+alloc = [
     "lib-unknown/alloc",
     "obfstr2-macros/alloc",
+]
+anti-disassembly = [
+    "dep:anti-disassembly",
+    "obfstr2-macros/anti-disassembly"
 ]
 
 budget-1k = ["obfstr2-macros/budget-1k"]
@@ -36,7 +45,7 @@ budget-4m = ["obfstr2-macros/budget-4m"]
 budget-8m = ["obfstr2-macros/budget-8m"]
 
 [dev-dependencies]
-lib-unknown = { version = "=0.4.1", features = ["dyntest"] }
+lib-unknown = { version = "=0.4.2", features = ["dyntest"] }
 
 
 [profile.release]

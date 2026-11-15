@@ -16,6 +16,9 @@ pub use lib_unknown::errors;
 /// 重导出 `lib_unknown::types`，提供 `StackStr` / `HeapBytes` 等运行时容器类型。
 pub use lib_unknown::types;
 
+#[cfg(feature = "anti-disassembly")]
+pub use anti_disassembly::anti_disassembly;
+
 /// 内部过程宏实现库的重导出。
 #[doc(hidden)]
 pub extern crate obfstr2_macros;

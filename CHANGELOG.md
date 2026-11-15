@@ -10,7 +10,20 @@
 
 ---
 
-## [Unreleased]
+## [0.4.1] - 2026-11-15
+
+### Added
+- 新增 `anti-disassembly` 特性：在解密链路的非内联包装函数体、内联解密片段、多级折叠聚合函数（`__fold_*`）与 chunk 展开作用域首尾四类语句位置，按档位概率注入 `anti_disassembly!` 反反汇编垃圾指令块（编译期展开为 x86 / x86_64 门控内联汇编）；低 / 均衡 / 高强度档注入概率 5% / 40% / 80%，块数（`count`）与垃圾字节基准（`garbage`）随档位递增，块数、位置与内容每次编译随机生成，无法特征化；底层依赖强制以 `red-zone-safety` 特性编译，x86_64 下 gadget 先下移 `rsp` 再 `push`，不破坏 System V 红区内被溢出的局部变量
+- HB2 空白隐写语料库外置化：`obfstr2-macros` 新增 `assets/text/` 拟真文本语料（真实程序片段、日志、脚本等 15 个文件），编译期经 `include_dir` 嵌入并递归收集非空 UTF-8 文本，取代原硬编码 OpenSSL 伪特征字符串表（`HB2_DECOYS`）
+
+### Changed
+- [BREAKING] 默认特性改为 `["alloc", "anti-disassembly"]`：默认构建同时启用堆内存支持与反反汇编注入；需纯栈 / 无注入形态时请使用 `default-features = false` 并按需单独启用 `alloc`
+- HB2 空白隐写符号表随机化：每次编码在 `\0`+`\n` 与 `\0`+空格间随机选择并 `shuffle`，解码端改用随密文一同发射的符号表字节串字面量（取代固定 `DEFAULT_TABLE`）
+- HB2 隐写插入算法重写：从语料库文本按"空白符号 + `\0`"切分候选片段，随机选取、随机位置 `splice` 插入；预算约为编码数据的 10%（最低 3 字节），外层语料尝试 10 次 / 内层片段尝试 32 次封顶
+- 加密选层简化：移除档位 `magnification` 倍率，所有档位均以随机 `1..3` 个基础层起步，直至组合安全度达到 `min_security`；高强度档强度改由原语叠加、`wrap_pct` / `junk_pct` / `cold_pct` 概率与反反汇编注入密度保证
+- 编排参数重构：`build_dec_layers` / `seal_chunk_group` / `fold_chunk_nodes` 从散装参数（`wrap_pct` / `cold_pct` / `max_latency`）统一改为接收 `&TierParams`；`TierParams` 新增 `anti_disasm_pct` / `anti_disasm_count_range` / `anti_disasm_garbage_range` 三字段
+- 依赖升级：`lib-unknown` 由 `=0.4.1` 升级至 `=0.4.2`；新增可选依赖 `anti-disassembly 0.1.0`（强制 `red-zone-safety`）与构建期依赖 `include_dir 0.7.4`
+- 文档：README / README_en 特性标志表新增 `alloc` / `anti-disassembly` 并重写 `default` 行，核心亮点新增"反反汇编垃圾指令注入"章节，HB2 隐写描述同步语料库与随机符号表机制，基准数据更新为最新实测（`b2` / `b3` 运行开销因反反汇编注入显著上升）
 
 ## [0.4.0] - 2026-11-13
 
@@ -85,7 +98,8 @@
 - 引入现代对称密码学设计要素（SPN、动态 S 盒 / P 盒、ARX、雪崩效应）以对抗 `angr` 等符号执行工具
 - 字符串 / 字节 / CStr 容器在离开作用域时执行 Volatile 擦除
 
-[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/AlbusPhos/obfstr2/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/AlbusPhos/obfstr2/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/AlbusPhos/obfstr2/compare/v0.3.1...v0.3.2

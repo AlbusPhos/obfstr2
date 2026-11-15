@@ -6,10 +6,11 @@
 
 //! 多态密文存储策略注册表（`Storage` + `STORAGES`）。
 //!
+use include_dir::{Dir, include_dir};
 
 use lib_unknown::encoding::base64::base64_encode_vec;
-use lib_unknown::encoding::hb2::{DEFAULT_TABLE as HB2_TABLE, hb2_encode_to_vec};
-use lib_unknown::rand::core::{fill_bytes, random, random_range, shuffle};
+use lib_unknown::encoding::hb2::hb2_encode_to_vec;
+use lib_unknown::rand::core::{choose, fill_bytes, random, random_range, shuffle};
 use proc_macro2::{
     Ident as Ident2, Literal as Literal2, Span as Span2, TokenStream as TokenStream2,
 };
@@ -150,103 +151,77 @@ const PEM_PROFILES: &[PemProfile] = &[
     },
 ];
 
-/// HB2 空白隐写的伪特征字符串表。
-///
-/// 来源为 OpenSSL / 常见系统库与程序中的可打印片段，统一裁剪到 ≤30 字节；
-/// 不得包含 HB2 符号表字节（默认 `\0` / `\n`），否则会被解码器误读为比特。
-const HB2_DECOYS: &[&str] = &[
-    "type=%d",
-    "TLS %s extension \"%s\"",
-    "TLS ext \"%s\" (id=%d)",
-    "error setting random cookie",
-    "Error calculating HMAC-SHA1",
-    "%s: %zu-byte buffer too large",
-    "matched peer raw public key",
-    "No peer cert or raw pubkey",
-    "Call to SSL_CONF_cmd failed",
-    "# SSL/TLS secrets log file",
-    "No %s certificate CA names",
-    "Acceptable %s CA names",
-    "Secure Renegotiation IS%s",
-    "TLS forbids renegotiation",
-    "ALPN negotiation",
-    "bad_cert_status_response",
-    "BIO_ADDRINFO assertion failed",
-    "Can't bind %s address",
-    "SRP param N and g unknown",
-    "SRP parameters set",
-    "Failed to init SRP verifier",
-    "Cannot init SRP verifier file",
-    "0123456789ABCDEF",
-    "save_free_certs",
-    "handle_opt_geninfo",
-    "set_fallback_pubkey",
-    "setup_request_ctx",
-    "setup_protection_ctx",
-    "setup_verification_ctx",
-    "write_PKIMESSAGE",
-    "read_PKIMESSAGE",
-    "read_write_req_resp",
-    "setup_client_ctx",
-    "./0123456789ABCDEFGHIJKLMNOPQR",
-    "Lets print some clear text",
-    "GET %s HTTP/1.0",
-    "This is a key...",
-    "app_http_get_asn1",
-    "asn1=SEQUENCE:LDAPMessage",
-    "messageID=INTEGER:1",
-    "extendedReq=EXPLICIT:23A",
-    "9049f5913b5bd5f8730cc1ce",
-    ".note.gnu.build-id",
-    ".note.gnu.property",
-    "libvlc",
-    "vlc_interface",
-    "SSL_CTX_new",
-    "ERR_clear_error",
-];
+static ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets");
+static TEXT_FILES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut texts = Vec::new();
+    if let Some(text_dir) = ASSETS.get_dir("text") {
+        let mut stack = vec![text_dir];
+        while let Some(dir) = stack.pop() {
+            for entry in dir.entries() {
+                match entry {
+                    include_dir::DirEntry::File(f) => {
+                        if let Some(contents) = f.contents_utf8()
+                            && !contents.trim().is_empty()
+                        {
+                            texts.push(contents);
+                        }
+                    }
+                    include_dir::DirEntry::Dir(sub) => stack.push(sub),
+                }
+            }
+        }
+    }
+    texts
+});
 
 /// 把密文编码为 HB2 空白符号串，并随机插入伪特征字符串（约为编码数据的 10%）。
-///
-/// 插入内容全部为表外可打印字节，`hb2_decode` 的宽松模式会自动跳过；
-/// 为保证极短载荷也有伪装文本，预算不足一条字符串时仍至少插入一条。
-fn hb2_storage_text(data: &[u8]) -> String {
-    debug_assert!(
-        HB2_DECOYS
-            .iter()
-            .all(|d| d.len() <= 30 && !d.as_bytes().iter().any(|b| HB2_TABLE.contains(b))),
-        "HB2 decoys must be <=30 bytes and must not contain table symbols"
-    );
+fn hb2_storage_text(data: &[u8]) -> (String, [u8; 2]) {
+    let mut table = if random() { *b"\0\n" } else { *b"\0 " };
+    shuffle(&mut table);
 
-    let mut out = hb2_encode_to_vec(data, HB2_TABLE);
-    let budget = out.len() / 10;
-    let mut inserted = 0usize;
+    let mut out = hb2_encode_to_vec(data, &table);
+    let mut budget = (out.len() / 10).max(3);
 
-    let mut order: Vec<usize> = (0..HB2_DECOYS.len()).collect();
-    order = shuffle(order);
+    if !TEXT_FILES.is_empty() {
+        let is_delimiter = |c: &u8| *c == 0 || (c.is_ascii() && table.contains(c));
 
-    let mut cursor = 0usize;
-    while inserted < budget {
-        let decoy = HB2_DECOYS[order[cursor % order.len()]];
-        cursor += 1;
+        let mut attempts = 0;
+        while budget > 0 && attempts < 10 {
+            attempts += 1;
 
-        let cost = decoy.len() + 1; // + 一个空格分隔符
-        if inserted > 0 && inserted + cost > budget {
-            break;
+            let Some(&contents) = choose(&TEXT_FILES) else {
+                break;
+            };
+
+            let candidates: Vec<&[u8]> = contents
+                .as_bytes()
+                .split(is_delimiter)
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            if candidates.is_empty() {
+                continue;
+            }
+
+            let mut inner_attempts = 0;
+            while budget > 0 && inner_attempts < 32 {
+                inner_attempts += 1;
+                let Some(&snippet) = choose(&candidates) else {
+                    break;
+                };
+
+                let insert_pos = random_range(0..=out.len());
+
+                out.splice(insert_pos..insert_pos, snippet.iter().copied());
+                budget = budget.saturating_sub(snippet.len());
+            }
         }
-
-        let pos = random_range(0..=out.len());
-        out.splice(pos..pos, decoy.bytes().chain(::core::iter::once(b' ')));
-        inserted += cost;
     }
 
-    if inserted == 0 {
-        let decoy = HB2_DECOYS[random_range(0..HB2_DECOYS.len())];
-        let pos = random_range(0..=out.len());
-        out.splice(pos..pos, decoy.bytes().chain(::core::iter::once(b' ')));
-    }
+    // 因为 HB2 的基础字符（\0, \n, ' '）和插入的 snippet 均是合法 UTF-8，且在字符边界插入，安全无损
+    let result_str = String::from_utf8(out).expect("HB2 隐写生成了非法的 UTF-8 序列");
 
-    // HB2 符号与挑选出的伪特征串均为 ASCII，因此必定是合法 UTF-8。
-    String::from_utf8(out).unwrap_or_else(|_| unreachable!("HB2 symbols and decoys are ASCII"))
+    (result_str, table)
 }
 
 pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
@@ -278,16 +253,20 @@ pub(crate) static STORAGES: LazyLock<Vec<Storage>> = LazyLock::new(|| {
             name: "hb2",
             ast: |ident, family, data| {
                 let size = data.len();
-                let text = hb2_storage_text(data);
+
+                let (text, table) = hb2_storage_text(data);
+
                 let encoded_literal = Literal2::string(&text);
+                let table_literal = Literal2::byte_string(&table);
                 let const_name = format_ident!("__STATIC_HB2_{}", random::<u32>());
+
                 quote! {
                     static #const_name: &str = #encoded_literal;
                     let mut #ident = unsafe { #family::<#size>::new_zeroed(#size).unwrap_unchecked() };
                     let (_, _hb2_written) = ::obfstr2::encoding::hb2::hb2_decode(
                         ::core::hint::black_box(#const_name.as_bytes()),
                         #ident.as_mut_byte_slice(),
-                        ::obfstr2::encoding::hb2::DEFAULT_TABLE,
+                        #table_literal,
                     );
                     ::core::hint::black_box(_hb2_written);
                 }

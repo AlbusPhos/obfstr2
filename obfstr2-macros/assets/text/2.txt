@@ -1,0 +1,4 @@
+webkit_web_view_get_inspector
+webkit_user_script_unref
+gtk_widget_size_allocate
+g_date_time_unref

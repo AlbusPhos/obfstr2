@@ -1,0 +1,4 @@
+webkit_settings_set_enable_javascript
+webkit_settings_set_enable_developer_extras
+webkit_settings_set_user_agent
+webkit_cookie_manager_get_all_cookies

@@ -1,0 +1,2 @@
+
+`this` is not an ArrayIterator`this` is not a RegExpStringIterator%Promise% constructor must return a `Promise` objectengine errors cannot be the cause of another errormust be a constructorderived constructor can only return an Object or undefinedstring should be in interner

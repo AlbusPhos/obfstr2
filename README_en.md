@@ -1,4 +1,4 @@
-<!-- i18n-sync-anchor:(sha256:6427b70d6d9816d2f26a57c4111ad5a0818ea0b6ab5628da6b84366a536ac388 reviewed:true source:README.md) -->
+<!-- i18n-sync-anchor:(sha256:83563c931e8ecb3f585515a889520b90ad08f9272f1cb5b2fdfc1d7ef9928fa8 reviewed:false source:README.md) -->
 # obfstr2
 
 > **Polymorphic compile-time string/wide-str/wide-cstr/bytes/int/float/cstr/file obfuscation**
@@ -106,13 +106,17 @@ Defends specifically against static cross-reference (Xrefs) tracking, bulk funct
 - **Cold/hot section segregation and anti-IPO**: randomly attaches `#[cold]` with some probability to evict decryption logic into `.text.unlikely`, destroying spatial locality; casts function pointers to `usize` and feeds them into `black_box` to fake address escape, preventing LLVM from performing cross-procedural constant propagation and dead-argument elimination.
 
 ### 5. Polymorphic Steganographic Storage and Controlled Memory Lifetime
-- **Polymorphic ciphertext and key disguise**: ciphertext and each chunk's 8-byte initial key are encoded through a random `Storage` strategy, disguised as ordinary byte streams, `u64`/`u128` integer arrays, MAC addresses, UUIDs, IPv6 addresses, PEM certificates, or HB2 whitespace steganography, evading high-entropy data-section scanning.
+- **Polymorphic ciphertext and key disguise**: ciphertext and each chunk's 8-byte initial key are encoded through a random `Storage` strategy, disguised as ordinary byte streams, `u64`/`u128` integer arrays, MAC addresses, UUIDs, IPv6 addresses, PEM certificates, or HB2 whitespace steganography, evading high-entropy data-section scanning. For HB2 steganography specifically, a corpus of realistic text (real program snippets, logs, scripts, etc.) is embedded at compile time via `include_dir`, and the whitespace symbol table is randomized per use (`\0`+`\n` / `\0`+space, shuffled order), making both the carrier text and symbol signatures uncharacterizable.
 - **End-to-end volatile wiping**: not only do the final returned string/byte containers perform volatile zeroing over their entire capacity when leaving scope (`Drop`), but intermediate temporary containers of variable-length decryption layers (such as `mse2`, `pkcs7_16`) are immediately `drop`-wiped after handover, preventing plaintext or intermediate states from lingering in stack/heap memory.
 - **Fine-grained stack budget (`STACK_BUDGET`)**: `budget-1k` through `budget-8m` features control the pure-stack ceiling; compile time automatically tracks the peak inflated size across multi-layer encryption/decryption and routes intelligently between `Stack*` and `Heap*` containers, fitting `no_std` bare-metal and embedded firmware.
 
 ### 6. Blazing-Fast Compilation of MB-Scale Payloads (No `long_running_const_eval`)
 When handling MB-scale or larger payloads (e.g., embedding large binary firmware or resource files via `f1!` / `f2!`), `obfstr2` compiles significantly faster than the traditional `obfstr`, and **requires no `#![allow(long_running_const_eval)]` in your code**:
 - **Inline backpressure and multiway fold trees**: expanding a large payload into a single giant function would plunge the LLVM backend into $O(V^2)$ complexity explosion during register allocation and instruction scheduling. `obfstr2` uses $\lceil i^{1.4} \rceil$ superlinear chunking to control total chunk count, combined with exponential inline backpressure (`effective_wrap_pct`) and an **O(log M) multiway fold tree (`fold_chunk_nodes`)**, strictly converging each function body's child count to a constant level ($\le 12$), letting the LLVM backend compile multi-MB payloads in roughly linear time.
+
+### 7. Anti-Disassembly Junk-Instruction Injection
+Targeted at disassemblers' linear sweep and instruction pattern recognition, junk instruction blocks with zero dependency on real data are randomly injected at statement positions throughout the decryption chain (the `anti_disassembly!` macro expands at compile time into architecture-gated inline assembly):
+- **Full coverage of four injection points**: non-inlined wrapper function bodies, inline decryption fragments, multiway fold aggregate functions (`__fold_*`), and the head/tail of chunk expansion scopes can all receive injections, interleaving junk instructions with real decryption instructions in disassembly views and sharply raising the cost of recovering the true decryption path.
 
 ---
 
@@ -210,27 +214,30 @@ When handling MB-scale or larger payloads (e.g., embedding large binary firmware
 
 ## Feature Flags
 
-| Feature       | Default | Description                                                                                                                                         |
-|:--------------|:--------|:----------------------------------------------------------------------------------------------------------------------------------------------------|
-| `default`     | ✅      | Enables heap memory support: activates `alloc` for downstream `lib-unknown` and `obfstr2-macros`, allowing expanded code to use `Heap*` containers. |
-| `budget-1k`   |         | Stack budget control: sets the pure-stack limit `STACK_BUDGET` to 1 KiB.                                                                            |
-| `budget-4k`   |         | Stack budget control: sets `STACK_BUDGET` to 4 KiB (the default).                                                                                   |
-| `budget-16k`  |         | Stack budget control: sets `STACK_BUDGET` to 16 KiB.                                                                                                |
-| `budget-64k`  |         | Stack budget control: sets `STACK_BUDGET` to 64 KiB.                                                                                                |
-| `budget-256k` |         | Stack budget control: sets `STACK_BUDGET` to 256 KiB.                                                                                               |
-| `budget-512k` |         | Stack budget control: sets `STACK_BUDGET` to 512 KiB.                                                                                               |
-| `budget-1m`   |         | Stack budget control: sets `STACK_BUDGET` to 1 MiB.                                                                                                 |
-| `budget-4m`   |         | Stack budget control: sets `STACK_BUDGET` to 4 MiB.                                                                                                 |
-| `budget-8m`   |         | Stack budget control: sets `STACK_BUDGET` to 8 MiB.                                                                                                 |
+| Feature            | Default | Dependencies                | Description                                                                                                                                                                                                                                                                                                 |
+|:-------------------|:-------:|:----------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `default`          |   ✅    | `alloc`, `anti-disassembly` | Default feature set: provides both heap memory support and anti-disassembly injection.                                                                                                                                                                                                                      |
+| `alloc`            |   ✅    | —                           | Enables heap memory support: activates `alloc` for downstream `lib-unknown` and `obfstr2-macros`, allowing expanded code to use `Heap*` containers.                                                                                                                                                         |
+| `anti-disassembly` |   ✅    | `dep:anti-disassembly`      | Anti-disassembly injection: inserts junk instruction blocks into the decryption chain with tier-dependent probability to defeat linear disassembly (see Core Highlights §7); also forwards to `obfstr2-macros/anti-disassembly` and force-enables the `red-zone-safety` feature of the external dependency. |
+| `budget-1k`        |   ❌    | —                           | Stack budget control: sets the pure-stack limit `STACK_BUDGET` to 1 KiB.                                                                                                                                                                                                                                    |
+| `budget-4k`        |   ❌    | —                           | Stack budget control: sets `STACK_BUDGET` to 4 KiB (the default).                                                                                                                                                                                                                                           |
+| `budget-16k`       |   ❌    | —                           | Stack budget control: sets `STACK_BUDGET` to 16 KiB.                                                                                                                                                                                                                                                        |
+| `budget-64k`       |   ❌    | —                           | Stack budget control: sets `STACK_BUDGET` to 64 KiB.                                                                                                                                                                                                                                                        |
+| `budget-256k`      |   ❌    | —                           | Stack budget control: sets `STACK_BUDGET` to 256 KiB.                                                                                                                                                                                                                                                       |
+| `budget-512k`      |   ❌    | —                           | Stack budget control: sets `STACK_BUDGET` to 512 KiB.                                                                                                                                                                                                                                                       |
+| `budget-1m`        |   ❌    | —                           | Stack budget control: sets `STACK_BUDGET` to 1 MiB.                                                                                                                                                                                                                                                         |
+| `budget-4m`        |   ❌    | —                           | Stack budget control: sets `STACK_BUDGET` to 4 MiB.                                                                                                                                                                                                                                                         |
+| `budget-8m`        |   ❌    | —                           | Stack budget control: sets `STACK_BUDGET` to 8 MiB.                                                                                                                                                                                                                                                         |
 
 Notes:
 
-- Disabling default features switches to pure-stack mode: Level 1 macros (`s1` / `b1` / `i1` / `fl1` / `cs1` / `w1` / `cw1` / `f1`) are always pure-stack and unaffected. If the peak intermediate chunk container exceeds `STACK_BUDGET`/2 (2048B under the default 4 KiB) without heap support enabled, a compile-time error will be emitted.
+- Disabling default features switches to pure-stack mode with no anti-disassembly injection: Level 1 macros (`s1` / `b1` / `i1` / `fl1` / `cs1` / `w1` / `cw1` / `f1`) are always pure-stack and unaffected. If the peak intermediate chunk container exceeds `STACK_BUDGET`/2 (2048B under the default 4 KiB) without heap support enabled, a compile-time error will be emitted.
+- Anti-disassembly junk instructions are x86 / x86_64-gated inline assembly and add extra expansion size and runtime overhead (most significant at the high tier, see the Benchmarks section); for scenarios extremely sensitive to size / runtime, disable the injection via `default-features = false` and then enable `alloc` alone.
 - `budget-*` features combine freely: when multiple are enabled, the largest takes effect; if none is specified, `STACK_BUDGET` defaults to 4 KiB.
 - `s_fmt1!` / `s_fmt2!` / `s_fmt3!` expand to `alloc::format!` and return `String`, requiring `alloc` downstream (`no_std` compatible), regardless of pure-stack settings.
 - Runtime fixedly depends on `crypto` / `types` / `encoding` from `lib-unknown`; `encoding` is used for Hex / Base64 decoding in expanded code and cannot be opted out.
 
-To disable default features (pure stack, no heap):
+To disable default features (pure stack, no heap, no anti-disassembly injection):
 
 ```toml
 [dependencies]
@@ -276,11 +283,11 @@ Parameter Notes:
 
 | Case               | Time / Deobf | Total Runtime (512 loops, incl. startup) | Incremental Build     | Cold Build            | Binary Size (unstripped) | Expand Chars     |
 |:-------------------|:-------------|:-----------------------------------------|:----------------------|:----------------------|:-------------------------|:-----------------|
-| Plaintext Baseline | —            | 10.364751ms                              | 171.966449ms          | 454.140508ms          | 445040                   | 1437             |
-| CasualX obfbytes!  | 0.01µs       | 10.371281ms（0%）                        | 202.474127ms（18%）   | 1.909735432s（321%）  | 448072（1%）             | 7780（441%）     |
-| obfstr2 b1!        | 19.46µs      | 20.327803ms（96%）                       | 475.87713ms（177%）   | 5.003601624s（1002%） | 512192（15%）            | 71476（4874%）   |
-| obfstr2 b2!        | 314.51µs     | 171.393708ms（1554%）                    | 1.232847096s（617%）  | 5.00176234s（1001%）  | 613456（38%）            | 190793（13177%） |
-| obfstr2 b3!        | 768.22µs     | 403.694785ms（3795%）                    | 2.860009413s（1563%） | 6.236919564s（1273%） | 812000（82%）            | 536333（37223%） |
+| Plaintext Baseline | —            | 10.348245ms                              | 292.540486ms          | 716.865351ms          | 445272                   | 1437             |
+| CasualX obfbytes!  | -0.11µs      | 10.293779ms（-1%）                       | 352.831847ms（21%）   | 2.144473535s（199%）  | 448304（1%）             | 7780（441%）     |
+| obfstr2 b1!        | 19.66µs      | 20.416565ms（97%）                       | 695.02243ms（138%）   | 6.968166459s（872%）  | 494336（11%）            | 75809（5176%）   |
+| obfstr2 b2!        | 569.86µs     | 302.118656ms（2820%）                    | 1.541242084s（427%）  | 12.591026191s（1656%）| 624512（40%）            | 244455（16911%） |
+| obfstr2 b3!        | 1319.54µs    | 685.951688ms（6529%）                    | 2.719967131s（830%）  | 9.763067567s（1262%） | 857736（93%）            | 579723（40243%） |
 
 ## Security
 

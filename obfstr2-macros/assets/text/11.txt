@@ -1,0 +1,6 @@
+
+, found 0x
+'Invalid CFB file (wrong magic number):
+failed to fill whole buffercalled `Result::unwrap()` on an `Err` value
+ is not a valid FAT entry
+Malformed directory (loop in tree)Malformed directory (root entry is missing)application/x-executableelfapplication/vnd.microsoft.portable-executableexedllclassapplication/x-llvmbcapplication/x-mach-binaryapplication/vnd.android.dexdexapplication/vnd.android.deydeyapplication/x-x509-ca-certderobjpemapplication/x-qemu-diskqcow2application/epub+zipapplication/x-mobipocket-ebookimage/jpegjpgimage/jp2jp2image/pngpngimage/gifgifimage/webpimage/x-canon-cr2cr2image/tifftifimage/bmpbmpimage/vnd.ms-photojxrimage/vnd.adobe.photoshoppsdi
