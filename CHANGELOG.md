@@ -10,6 +10,12 @@
 
 ---
 
+## [Unreleased]
+
+### Changed
+- hb2_storage_text中的result_str从from_utf8(out).expect改为使用from_utf8_lossy避免expect。
+
+
 ## [0.4.1] - 2026-11-15
 
 ### Added
