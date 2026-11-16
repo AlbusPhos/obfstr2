@@ -80,6 +80,10 @@ pub(crate) struct TierParams {
     pub(crate) prefer_stack: bool,
     pub(crate) max_latency: u8,
     pub(crate) min_security: u8,
+    /// 单层安全度缩放系数（默认 1.0）：
+    /// - `< 1.0`：折减单层安全度贡献，迫使选层循环叠加更多加密层才达到 `min_security`；
+    /// - `> 1.0`：放大单层安全度贡献，更快达到 `min_security`，减少加密层数。
+    pub(crate) security_factor: f64,
     /// 包装概率 0..=100（`build_dec_layers` 按层抛硬币）。
     pub(crate) wrap_pct: u8,
     /// 垃圾块填充概率（0~100 百分比；按 chunk 掷骰；超出 100 视为恒插）。
@@ -93,11 +97,59 @@ pub(crate) struct TierParams {
     pub(crate) anti_disasm_garbage_range: RangeInclusive<u8>,
 }
 
+impl TierParams {
+    /// 校验自定义档位（`*_user!` 配置块）的取值与组合约束，违规以字符串错误返回。
+    ///
+    /// - `min_security` 必须 `<= 99`：组合安全度按 `100 * (1 - Π(1 - s/100))` 乘法累积，
+    ///   数学上永远无法达到 100，`>= 100` 会使选层循环永不退出（编译死循环）。
+    /// - `max_latency` 必须 `>= 2`：原语注册表的最低单层延迟为 2（`cbc_xor` / `sbox_static`），
+    ///   更小的值会使首层可用原语池为空（深层报 `no crypto for layer`）。
+    /// - 四个百分比字段必须 `<= 100`：编排端对超限值有静默钳位语义（如 `junk_pct` 超过
+    ///   100 视为恒插），对用户 API 显式报错优于静默钳位。
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.min_security >= 100 {
+            return Err(format!(
+                "min_security 不能 >= 100（组合安全度按乘法累积，数学上无法达到 100，会导致编译死循环），实际 {}",
+                self.min_security
+            ));
+        }
+        if !self.security_factor.is_finite() || self.security_factor <= 0.0 {
+            return Err(format!(
+                "security_factor 必须是 > 0.0 的有限浮点数（<= 0 会导致组合安全度无法增长而陷入编译死循环），实际 {}",
+                self.security_factor
+            ));
+        }
+        if self.max_latency < 2 {
+            return Err(format!(
+                "max_latency 不能 < 2（原语注册表最低单层延迟为 2，更小的值会导致无可用加密原语），实际 {}",
+                self.max_latency
+            ));
+        }
+        for (name, pct) in [
+            ("wrap_pct", self.wrap_pct),
+            ("junk_pct", self.junk_pct),
+            ("cold_pct", self.cold_pct),
+        ] {
+            if pct > 100 {
+                return Err(format!("{name} 必须在 0..=100 范围内，实际 {pct}"));
+            }
+        }
+        if self.anti_disasm_pct > 100 {
+            return Err(format!(
+                "anti_disasm_pct 必须在 0..=100 范围内，实际 {}",
+                self.anti_disasm_pct
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// 低延迟档（`s1` / `b1` / `i1` / `fl1` / `cs1`）：栈偏好（`alloc` 下掷币 76% 栈），`no_std` 可用。
 pub(crate) const TIER_LOW: TierParams = TierParams {
     prefer_stack: true,
     max_latency: 30,
     min_security: 7,
+    security_factor: 1.0,
     wrap_pct: 8,
     junk_pct: 2,
     cold_pct: 10,
@@ -112,6 +164,7 @@ pub(crate) const TIER_BALANCED: TierParams = TierParams {
     prefer_stack: false,
     max_latency: 80,
     min_security: 63,
+    security_factor: 1.0,
     wrap_pct: 50,
     junk_pct: 18,
     cold_pct: 20,
@@ -126,6 +179,7 @@ pub(crate) const TIER_HIGH: TierParams = TierParams {
     prefer_stack: false,
     max_latency: 100,
     min_security: 93,
+    security_factor: 1.0,
     wrap_pct: 85,
     junk_pct: 35,
     cold_pct: 50,
@@ -218,7 +272,7 @@ fn apply_single_layer(
 /// 若 `tier.pad_short` 开启且初始长度 `< 16`，强制前置一层 `pkcs7_16`（不计入 `op_count` 与安全度）。
 /// 返回 `(密文, 层快照)`；原语自报告长度与实际输出不一致时返回 `Err`。
 /// `chunk_tag` 仅用于错误定位（如 `"chunk#3"` / `"junk#3"`）。
-fn encrypt_layers(
+pub(crate) fn encrypt_layers(
     data: Vec<u8>,
     tier: &TierParams,
     ghost_state: u64,
@@ -271,14 +325,16 @@ fn encrypt_layers(
         let security = crypto.security;
         data = push_layer(crypto, data, &mut layers)?;
 
-        let vulnerability = (100.0 - security as f64) / 100.0;
+        // 单层安全度按档位系数缩放，并钳位到 [0.0, 100.0]（防止系数过大时 vulnerability 变为负数）
+        let scaled_security = (security as f64 * tier.security_factor).clamp(0.0, 100.0);
+        let vulnerability = (100.0 - scaled_security) / 100.0;
         combined_vulnerability *= vulnerability;
         current_combined_security = (100.0 * (1.0 - combined_vulnerability)) as u8;
     }
     Ok((data, layers))
 }
 
-fn effective_wrap_pct(base: u8, inline_count: u32) -> u8 {
+pub(crate) fn effective_wrap_pct(base: u8, inline_count: u32) -> u8 {
     if base == 0 {
         return 0;
     }
@@ -578,15 +634,15 @@ fn gen_integrity_check(is_junk: bool, final_ident: &Ident2) -> TokenStream2 {
 /// 单个折叠组的最小子节点数。
 const FOLD_GROUP_MIN: usize = 4;
 /// 单个折叠组的最大子节点数。
-const FOLD_GROUP_MAX: usize = 12;
+pub(crate) const FOLD_GROUP_MAX: usize = 12;
 
 /// 一个待发射的块节点。
 ///
 /// `stmt` 既可以在根作用域执行，也可以被搬进任意层级的折叠函数：
 /// 两个作用域都提供同名的 `&mut MainTy` 与 `mut u64` ghost 变量，
 /// 因此块语句本身无需任何改写。
-struct ChunkNode {
-    stmt: TokenStream2,
+pub(crate) struct ChunkNode {
+    pub(crate) stmt: TokenStream2,
 }
 
 /// 把一组相邻块节点折叠为独立函数，返回只含一条调用的父级节点。
@@ -637,7 +693,7 @@ fn seal_chunk_group(
 /// 因此节点数严格下降，折叠必然终止；根函数与单个折叠函数都只承载
 /// 有限个（<= [`FOLD_GROUP_MAX`]）块节点，不再随块数线性膨胀。
 #[allow(clippy::too_many_arguments)]
-fn fold_chunk_nodes(
+pub(crate) fn fold_chunk_nodes(
     mut nodes: Vec<ChunkNode>,
     id: u64,
     main_ty: &TokenStream2,
@@ -942,250 +998,4 @@ pub(crate) fn build_obfuscated_bytes(
         },
         main_is_heap,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::expect_used)]
-    use super::*;
-
-    #[test]
-    fn effective_wrap_pct_starts_at_base() {
-        assert_eq!(effective_wrap_pct(15, 0), 15);
-        assert_eq!(effective_wrap_pct(50, 0), 50);
-        assert_eq!(effective_wrap_pct(85, 0), 85);
-        assert_eq!(effective_wrap_pct(0, 999), 0);
-    }
-
-    /// 折叠树必须把根节点数收敛到 `FOLD_ROOT_MAX`，且小块输入不生成任何折叠壳。
-    #[test]
-    fn fold_chunk_nodes_bounds_root_spine() {
-        let main_ty = quote!(u8);
-        let bytes = format_ident!("__b");
-        let ghost = format_ident!("__g");
-        let make = |n: usize| {
-            (0..n)
-                .map(|i| ChunkNode {
-                    stmt: quote!(let _ = #i as u8;),
-                })
-                .collect::<Vec<_>>()
-        };
-
-        let mut prelude = TokenStream2::new();
-        let roots = fold_chunk_nodes(
-            make(1),
-            1,
-            &main_ty,
-            &bytes,
-            &ghost,
-            &mut prelude,
-            &TIER_LOW,
-        );
-        assert_eq!(roots.len(), 1);
-        assert!(
-            !prelude.to_string().contains("__fold_"),
-            "单块不应生成折叠壳"
-        );
-
-        let mut prelude = TokenStream2::new();
-        let roots = fold_chunk_nodes(
-            make(1000),
-            2,
-            &main_ty,
-            &bytes,
-            &ghost,
-            &mut prelude,
-            &TIER_LOW,
-        );
-        assert!(
-            roots.len() <= FOLD_GROUP_MAX,
-            "根节点数应收敛到 {FOLD_GROUP_MAX}"
-        );
-        assert!(
-            prelude.to_string().contains("__fold_"),
-            "大规模必须生成折叠函数"
-        );
-    }
-
-    /// 批量模拟三档 Tier 的加密选层过程（`encrypt_layers`），用于离线评估配置合理性。
-    #[test]
-    fn simulate_crypto_selection_across_tiers() {
-        use lib_unknown::rand::core::fill_bytes;
-        use std::collections::{BTreeMap, HashSet};
-
-        const ITERATIONS: usize = 100;
-        const CHUNK_SIZES: [usize; 9] = [1, 2, 4, 8, 16, 32, 64, 256, 1024];
-
-        struct TierCase {
-            name: &'static str,
-            tier: TierParams,
-        }
-
-        let cases = [
-            TierCase {
-                name: "LOW",
-                tier: TIER_LOW,
-            },
-            TierCase {
-                name: "BALANCED",
-                tier: TIER_BALANCED,
-            },
-            TierCase {
-                name: "HIGH",
-                tier: TIER_HIGH,
-            },
-        ];
-
-        for case in &cases {
-            let tier = case.tier.clone();
-            println!(
-                "\n{:=^100}",
-                format!(
-                    " Tier {} (max_latency={}, min_security={}, pad_short={}) ",
-                    case.name, tier.max_latency, tier.min_security, tier.pad_short
-                )
-            );
-
-            // 原语使用计数（跨所有 chunk size 聚合）
-            let mut usage: BTreeMap<&'static str, u64> = BTreeMap::new();
-            let mut layer_counts: Vec<usize> = Vec::new();
-            let mut securities: Vec<u8> = Vec::new();
-            let mut latency_sums: Vec<u32> = Vec::new();
-            let mut fail = 0u64;
-            let mut total = 0u64;
-
-            // 按 chunk size 细分的层数 / 安全度均值，用于观察规模效应（是否随长度漂移）
-            let mut per_size_layers: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-            let mut per_size_security: BTreeMap<usize, Vec<u8>> = BTreeMap::new();
-
-            for &size in &CHUNK_SIZES {
-                for _ in 0..ITERATIONS {
-                    total += 1;
-                    let mut data = vec![0u8; size];
-                    if size > 0 {
-                        fill_bytes(&mut data);
-                    }
-                    match encrypt_layers(data, &tier, random::<u64>(), "sim") {
-                        Ok((_, layers)) => {
-                            let pre_padded = tier.pad_short && size < 16;
-                            let mut vuln = 1.0_f64;
-                            let mut lat_sum: u32 = 0;
-                            for (idx, l) in layers.iter().enumerate() {
-                                *usage.entry(l.crypto.name).or_insert(0) += 1;
-                                lat_sum += l.crypto.latency as u32;
-                                // 跳过前置 pkcs7_16 预填充层的安全度贡献，与 encrypt_layers 口径一致
-                                if !(pre_padded && idx == 0 && l.crypto.name == "pkcs7_16") {
-                                    vuln *= (100.0 - l.crypto.security as f64) / 100.0;
-                                }
-                            }
-                            let sec = (100.0 * (1.0 - vuln)) as u8;
-
-                            layer_counts.push(layers.len());
-                            securities.push(sec);
-                            latency_sums.push(lat_sum);
-                            per_size_layers.entry(size).or_default().push(layers.len());
-                            per_size_security.entry(size).or_default().push(sec);
-                        }
-                        Err(_e) => {
-                            fail += 1;
-                        }
-                    }
-                }
-            }
-
-            let avg = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
-            let avg_u = |v: &[usize]| avg(&v.iter().map(|&x| x as f64).collect::<Vec<_>>());
-            let avg_u8 = |v: &[u8]| avg(&v.iter().map(|&x| x as f64).collect::<Vec<_>>());
-            let avg_u32 = |v: &[u32]| avg(&v.iter().map(|&x| x as f64).collect::<Vec<_>>());
-
-            println!(
-                "调用次数: {total}, 失败次数: {fail} ({:.3}%)",
-                fail as f64 / total as f64 * 100.0
-            );
-            println!(
-                "层数: min={} avg={:.2} max={}",
-                layer_counts.iter().copied().min().unwrap_or(0),
-                avg_u(&layer_counts),
-                layer_counts.iter().copied().max().unwrap_or(0),
-            );
-            let below_target = securities
-                .iter()
-                .filter(|&&s| s < tier.min_security)
-                .count();
-            println!(
-                "组合安全度: min={} avg={:.2} max={}, 未达标占比={:.2}% (目标>={})",
-                securities.iter().copied().min().unwrap_or(0),
-                avg_u8(&securities),
-                securities.iter().copied().max().unwrap_or(0),
-                below_target as f64 / securities.len().max(1) as f64 * 100.0,
-                tier.min_security,
-            );
-            println!(
-                "单 chunk 层延迟之和估算: min={} avg={:.2} max={}",
-                latency_sums.iter().copied().min().unwrap_or(0),
-                avg_u32(&latency_sums),
-                latency_sums.iter().copied().max().unwrap_or(0),
-            );
-
-            // 按 chunk size 展示规模效应（层数 / 安全度是否随 size 增长而漂移）
-            println!(
-                "\n{:<10} | {:<10} | {:<10}",
-                "ChunkSize", "AvgLayers", "AvgSecurity"
-            );
-            println!("{:-<36}", "");
-            for &size in &CHUNK_SIZES {
-                let layers = per_size_layers.get(&size).cloned().unwrap_or_default();
-                let secs = per_size_security.get(&size).cloned().unwrap_or_default();
-                println!(
-                    "{:<10} | {:<10.2} | {:<10.2}",
-                    size,
-                    avg_u(&layers),
-                    avg_u8(&secs),
-                );
-            }
-
-            // 原语使用频率分布
-            let total_usage: u64 = usage.values().sum();
-            let mut rows: Vec<(&str, u64)> = usage.iter().map(|(&k, &v)| (k, v)).collect();
-            rows.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
-
-            println!(
-                "\n{:<15} | {:<10} | {:<10} | {:<10} | {:<10}",
-                "Crypto", "Count", "Freq%", "Security", "Latency"
-            );
-            println!("{:-<65}", "");
-            for (name, count) in &rows {
-                if let Some(crypto) = CRYPTOS.iter().find(|c| c.name == *name) {
-                    println!(
-                        "{:<15} | {:<10} | {:<9.2}% | {:<10} | {:<10}",
-                        name,
-                        count,
-                        *count as f64 / total_usage.max(1) as f64 * 100.0,
-                        crypto.security,
-                        crypto.latency,
-                    );
-                }
-            }
-
-            let available: HashSet<&str> = CRYPTOS
-                .iter()
-                .filter(|c| c.latency <= tier.max_latency)
-                .map(|c| c.name)
-                .collect();
-            let used: HashSet<&str> = rows.iter().map(|&(n, _)| n).collect();
-            let never_used: Vec<&&str> = available.iter().filter(|n| !used.contains(*n)).collect();
-            if !never_used.is_empty() {
-                println!(
-                    "\n⚠ 从未被选中的可用原语（latency<={}）: {:?}",
-                    tier.max_latency, never_used
-                );
-            }
-
-            assert_eq!(
-                fail, 0,
-                "tier {} 存在无法完成加密选层的 chunk 长度",
-                case.name
-            );
-        }
-    }
 }

@@ -5,7 +5,25 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use obfstr2::types::str::Str;
-use obfstr2::{b1, b3, cs2, f2, fl2, i1, i2, i3, s_fmt2, s1, s2, s3};
+use obfstr2::{b1, b3, cs2, f2, fl2, i1, i2, i3, s_fmt2, s_user, s1, s2, s3};
+
+/// 自定义一个极高强度混淆
+macro_rules! s4 {
+    ($s:expr) => {
+        s_user!(
+        {
+            prefer_stack: true,
+            max_latency: 100,
+            min_security: 99,
+            junk_pct: 50,
+            pad_short: true,
+            anti_disasm_pct: 98,
+            security_factor: 0.5
+        },
+        $s,
+    )
+    };
+}
 
 /// 应用身份：名称 / 版本 / 发布通道。
 fn app_identity() -> (Box<dyn Str>, Box<dyn Str>, Box<dyn Str>) {
@@ -21,9 +39,9 @@ fn default_endpoint() -> Box<dyn Str> {
     Box::new(s2!("https://api.example.com/v1"))
 }
 
-/// 演示用访问令牌（虚构值），展示高强度档在敏感配置上的用法。
+/// 演示用访问令牌（虚构值），展示用户可配置的混淆。
 fn demo_token() -> Box<dyn Str> {
-    Box::new(s3!("demo_7f3c9a1e5b2d4c6f8a0e"))
+    Box::new(s4!("demo_7f3c9a1e5b2d4c6f8a0e"))
 }
 
 /// 功能开关位掩码：还原后就是普通整数，可直接参与位运算。

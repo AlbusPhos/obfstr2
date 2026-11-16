@@ -427,3 +427,76 @@ fn owned_containers_can_bind_and_reuse() {
     }
     assert_eq!(echo_len(&b), 3);
 }
+
+#[test]
+fn user_macros_roundtrip() {
+    // 自定义档：`({ 配置 }, 载荷)` 统一形态的 roundtrip
+    use obfstr2::{b_user, cs_user, cw_user, f_user, fl_user, i_user, s_fmt_user, s_user, w_user};
+
+    // 空配置块 == 均衡档语义
+    assert_eq!(&*s_user!({}, "hello"), "hello");
+    // 全字段覆盖 + 多行尾随逗号
+    let s = s_user!(
+        {
+            prefer_stack: true,
+            max_latency: 50,
+            min_security: 70,
+            security_factor: 0.8,
+            wrap_pct: 30,
+            junk_pct: 10,
+            cold_pct: 15,
+            pad_short: true,
+        },
+        "hello",
+    );
+    assert_eq!(&*s, "hello");
+
+    assert_eq!(&*b_user!({ prefer_stack: true }, b"abc"), &b"abc"[..]);
+    assert_eq!(&*b_user!({}, [0x61, 98, 99]), &[0x61u8, 0x62, 0x63][..]);
+    assert_eq!(&*cs_user!({ max_latency: 50 }, c"/bin/sh"), c"/bin/sh");
+    assert_eq!(&*cs_user!({}, "/bin/sh"), c"/bin/sh");
+    let cw = cw_user!({ min_security: 60 }, "kernel32.dll");
+    assert_eq!(
+        &cw[..cw.len() - 1],
+        "kernel32.dll".encode_utf16().collect::<Vec<_>>().as_slice()
+    );
+    assert_eq!(cw[cw.len() - 1], 0);
+    assert_eq!(&*w_user!({}, "a\0b"), &[0x61u16, 0, 0x62][..]);
+    assert_eq!(i_user!({ max_latency: 50 }, 42u32) + 1, 43u32);
+    assert_eq!(i_user!({}, -1), -1i32);
+    assert_eq!(
+        fl_user!({ max_latency: 50 }, 3.15).to_bits(),
+        3.15f64.to_bits()
+    );
+    assert_eq!(
+        &*f_user!({ prefer_stack: true }, "assets/fixture.bin"),
+        b"secret"
+    );
+    assert_eq!(
+        s_fmt_user!({ max_latency: 50 }, "hello, {}!", "world"),
+        "hello, world!"
+    );
+    let name = "world";
+    assert_eq!(s_fmt_user!({}, "hi, {name}!", name = name), "hi, world!");
+}
+
+#[test]
+fn user_macro_forwarding_through_user_macro_rules() {
+    // 用户再包一层 macro_rules!（`:literal` 元变量转发产生 None 分组）不应误报
+    use obfstr2::s_user;
+
+    macro_rules! fwd_s {
+        ($v:literal) => {
+            s_user!({ prefer_stack: true }, $v)
+        };
+    }
+    // 配置块转发需以 `:tt` 捕获（`{ key: val }` 不是合法表达式字面量，
+    // `:expr` 捕获会在匹配阶段被 rustc 以 "struct literal body without path" 拒绝）
+    macro_rules! fwd_cfg_tt {
+        ($cfg:tt, $v:literal) => {
+            s_user!($cfg, $v)
+        };
+    }
+    assert_eq!(&*fwd_s!("hello"), "hello");
+    assert_eq!(&*fwd_cfg_tt!({ max_latency: 40 }, "hello"), "hello");
+}

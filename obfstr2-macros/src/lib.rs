@@ -440,3 +440,123 @@ pub fn cw2(input: TokenStream) -> TokenStream {
 pub fn cw3(input: TokenStream) -> TokenStream {
     expand_cwstr(input, types::cw3)
 }
+
+// ── `*_user` 自定义档：`({ key: val, ... }, 载荷)`，以 TIER_BALANCED 为覆盖底 ──
+
+fn expand_user<T>(
+    input: TokenStream,
+    parser: fn(proc_macro2::TokenStream) -> syn::Result<(T, core::TierParams)>,
+    builder: fn(T, core::TierParams) -> Result<proc_macro2::TokenStream, String>,
+) -> TokenStream {
+    match parser(input.into()) {
+        Ok((parsed, tier)) => match builder(parsed, tier) {
+            Ok(ts) => ts.into(),
+            Err(e) => err_to_compile_error(proc_macro2::Span::call_site(), e),
+        },
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// 字符串混淆宏本体（自定义档）：接受 `({ key: val, ... }, "...")`，以 `TIER_BALANCED` 为基底。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs` 与本 crate `tests/user.rs`。
+#[proc_macro]
+pub fn s_user(input: TokenStream) -> TokenStream {
+    expand_user(input, parse::parse_str_user, types::s_user)
+}
+
+/// 字节串混淆宏本体（自定义档）：接受 `({ key: val, ... }, b"..." | [...])`，以 `TIER_BALANCED` 为基底。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs` 与本 crate `tests/user.rs`。
+#[proc_macro]
+pub fn b_user(input: TokenStream) -> TokenStream {
+    expand_user(input, parse::parse_bytes_user, types::b_user)
+}
+
+/// 文件混淆宏本体（自定义档）：接受 `({ key: val, ... }, "path")`，以 `TIER_BALANCED` 为基底。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn f_user(input: TokenStream) -> TokenStream {
+    expand_user(input, parse::parse_file_user, types::b_user)
+}
+
+/// 格式化字符串混淆宏本体（自定义档）：接受 `({ key: val, ... }, "fmt {}", args...)`，
+/// 以 `TIER_BALANCED` 为基底，字面量片段走 `s_user` 档混淆。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/s_fmt.rs`。
+#[proc_macro]
+pub fn s_fmt_user(input: TokenStream) -> TokenStream {
+    match parse::split_user_prefix(input.into(), "s_fmt_user!") {
+        Ok((tier, rest)) => fmt::sfmt(rest, |s| types::s_user(s, tier.clone())).into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// 整数混淆宏本体（自定义档）：接受 `({ key: val, ... }, <int_lit>)`，以 `TIER_BALANCED` 为基底。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn i_user(input: TokenStream) -> TokenStream {
+    expand_user(input, parse::parse_int_user, types::i_user)
+}
+
+/// 浮点混淆宏本体（自定义档）：接受 `({ key: val, ... }, <float_lit>)`，以 `TIER_BALANCED` 为基底。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn fl_user(input: TokenStream) -> TokenStream {
+    expand_user(input, parse::parse_float_user, types::fl_user)
+}
+
+/// C 字符串混淆宏本体（自定义档）：接受 `({ key: val, ... }, "..." | c"..." | b"...")`，
+/// 以 `TIER_BALANCED` 为基底。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn cs_user(input: TokenStream) -> TokenStream {
+    expand_user(input, parse::parse_cstr_user, types::cs_user)
+}
+
+/// 宽字符串混淆宏本体（自定义档）：接受 `({ key: val, ... }, "...")`，以 `TIER_BALANCED` 为基底。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn w_user(input: TokenStream) -> TokenStream {
+    expand_user(input, parse::parse_wstr_user, types::w_user)
+}
+
+/// 宽 C 字符串混淆宏本体（自定义档）：接受 `({ key: val, ... }, "...")`，以 `TIER_BALANCED` 为基底。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn cw_user(input: TokenStream) -> TokenStream {
+    expand_user(input, parse::parse_cwstr_user, types::cw_user)
+}

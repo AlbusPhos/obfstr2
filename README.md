@@ -34,7 +34,8 @@
 obfstr2 = "0.4"
 ```
 
-所有混淆宏均以数字后缀区分强度档位：`1`（低延迟）、`2`（推荐均衡）、`3`（高强度抗逆向）。
+所有混淆宏均以数字后缀区分强度档位：`1`（低延迟）、`2`（推荐均衡）、`3`（高强度抗逆向）；
+另有 [`*_user!`](#自定义档-_user-自定义档实验性) 自定义档，以配置块在均衡档基础上逐字段覆盖档位参数。
 
 ```rust
 use obfstr2::{b2, cs2, cw2, f2, fl2, i2, s2, s_fmt2, w1};
@@ -171,20 +172,64 @@ fn main() {
 
 所有宏均提供 `1`（低延迟）、`2`（均衡）、`3`（高强度）三个档位：
 
-| 宏族                  | 输入字面量示例                | 返回类型（解引用目标）                                         | 特性与约束说明                                                                                                       |
-|:----------------------|:------------------------------|:---------------------------------------------------------------|:---------------------------------------------------------------------------------------------------------------------|
-| `s1!` ~ `s3!`         | `"hello"`                     | `StackStr<N>` / `HeapStr<N>`<br>（`Deref<Target = str>`）      | `Drop` 自动清零。                                                                                                    |
-| `b1!` ~ `b3!`         | `b"abc"` 或 `[0x41, 66]`      | `StackBytes<N>` / `HeapBytes<N>`<br>（`Deref<Target = [u8]>`） | 数组元素范围 `0..=255`；`Drop` 自动清零。                                                                            |
-| `cs1!` ~ `cs3!`       | `c"..."` / `"..."` / `b"..."` | `StackCStr<N>` / `HeapCStr<N>`<br>（`Deref<Target = CStr>`）   | 自动追加结尾 `\0` 混淆，运行时零拷贝还原；非 UTF-8 请用 `b"..."`；**严禁内部含 NUL**（防截断）；`Drop` 自动清零。    |
-| `w1!` ~ `w3!`         | `"a\0b"`                      | `StackU16<N>` / `HeapU16<N>`<br>（`Deref<Target = [u16]>`）    | 编译期转为 UTF-16 码元；**不追加**结尾 NUL，**允许**内部含 NUL；适用于长度前缀 API；`Drop` 自动清零。                |
-| `cw1!` ~ `cw3!`       | `"kernel32.dll"`              | `StackU16<N>` / `HeapU16<N>`<br>（`Deref<Target = [u16]>`）    | 编译期转为 UTF-16 并**自动追加结尾 `0u16`**；**严禁内部含 NUL**；`as_ptr()` 可直投 Win32 `PCWSTR`；`Drop` 自动清零。 |
-| `f1!` ~ `f3!`         | `"assets/data.bin"`           | `StackBytes<N>` / `HeapBytes<N>`<br>（`Deref<Target = [u8]>`） | 路径相对被编译 crate 的 `CARGO_MANIFEST_DIR`；`Drop` 自动清零。                                                      |
-| `i1!` ~ `i3!`         | `42u32` / `-1` / `0xFFu16`    | 原生整数裸值（`u8`~`i128` / `usize`）                          | 空后缀默认为 `i32`；`usize`/`isize` 按 64 位语义编码；无 `Drop` 清零。                                               |
-| `fl1!` ~ `fl3!`       | `3.15f32` / `-1.0` / `1e10`   | 原生浮点裸值（`f32` / `f64`）                                  | 空后缀默认为 `f64`；拒绝 `inf`/`NaN`；保留 `-0.0` 符号位（断言请用 `to_bits()`）；无 `Drop` 清零。                   |
-| `s_fmt1!` ~ `s_fmt3!` | `"hi, {}!", name`             | `alloc::string::String`                                        | 仅混淆格式串中的静态字面量片段，随后走 `format!`；依赖 `alloc` 特性。                                                |
+| 宏族                  | 输入字面量示例                   | 返回类型（解引用目标）                                         | 特性与约束说明                                                                                                                                    |
+|:----------------------|:---------------------------------|:---------------------------------------------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------|
+| `s1!` ~ `s3!`         | `"hello"`                        | `StackStr<N>` / `HeapStr<N>`<br>（`Deref<Target = str>`）      | `Drop` 自动清零。                                                                                                                                 |
+| `b1!` ~ `b3!`         | `b"abc"` 或 `[0x41, 66]`         | `StackBytes<N>` / `HeapBytes<N>`<br>（`Deref<Target = [u8]>`） | 数组元素范围 `0..=255`；`Drop` 自动清零。                                                                                                         |
+| `cs1!` ~ `cs3!`       | `c"..."` / `"..."` / `b"..."`    | `StackCStr<N>` / `HeapCStr<N>`<br>（`Deref<Target = CStr>`）   | 自动追加结尾 `\0` 混淆，运行时零拷贝还原；非 UTF-8 请用 `b"..."`；**严禁内部含 NUL**（防截断）；`Drop` 自动清零。                                 |
+| `w1!` ~ `w3!`         | `"a\0b"`                         | `StackU16<N>` / `HeapU16<N>`<br>（`Deref<Target = [u16]>`）    | 编译期转为 UTF-16 码元；**不追加**结尾 NUL，**允许**内部含 NUL；适用于长度前缀 API；`Drop` 自动清零。                                             |
+| `cw1!` ~ `cw3!`       | `"kernel32.dll"`                 | `StackU16<N>` / `HeapU16<N>`<br>（`Deref<Target = [u16]>`）    | 编译期转为 UTF-16 并**自动追加结尾 `0u16`**；**严禁内部含 NUL**；`as_ptr()` 可直投 Win32 `PCWSTR`；`Drop` 自动清零。                              |
+| `f1!` ~ `f3!`         | `"assets/data.bin"`              | `StackBytes<N>` / `HeapBytes<N>`<br>（`Deref<Target = [u8]>`） | 路径相对被编译 crate 的 `CARGO_MANIFEST_DIR`；`Drop` 自动清零。                                                                                   |
+| `i1!` ~ `i3!`         | `42u32` / `-1` / `0xFFu16`       | 原生整数裸值（`u8`~`i128` / `usize`）                          | 空后缀默认为 `i32`；`usize`/`isize` 按 64 位语义编码；无 `Drop` 清零。                                                                            |
+| `fl1!` ~ `fl3!`       | `3.15f32` / `-1.0` / `1e10`      | 原生浮点裸值（`f32` / `f64`）                                  | 空后缀默认为 `f64`；拒绝 `inf`/`NaN`；保留 `-0.0` 符号位（断言请用 `to_bits()`）；无 `Drop` 清零。                                                |
+| `s_fmt1!` ~ `s_fmt3!` | `"hi, {}!", name`                | `alloc::string::String`                                        | 仅混淆格式串中的静态字面量片段，随后走 `format!`；依赖 `alloc` 特性。                                                                             |
+| `*_user!`（全家族）   | `{ max_latency: 50, ... }, 载荷` | 同对应档位宏                                                   | 自定义档（实验性）：首参数为配置块，以均衡档为基底逐字段覆盖档位参数，见[下文](#自定义档-_user-自定义档实验性)；`s_fmt_user!` 依赖 `alloc` 特性。 |
 
 > **使用提示（堆栈路由与类型推断）：**
 > 开启 `alloc`（默认）时，载荷 $\le 16\text{B}$ 恒走栈容器，达到 `STACK_BUDGET` 恒走堆容器，其间按档位概率随机路由。因此**返回的具体容器类型（`Stack*` 或 `Heap*`）可能随每次编译动态变化**，请始终使用 `let val = s2!("...");` 进行类型推断，切勿写死具体容器类型标注。
+
+### 自定义档 `*_user!`
+
+全家族统一为 **`({ 配置 }, 载荷)`** 两参形态：首参数为花括号配置块 `{ key: val, ... }`，次参数与对应档位宏的载荷一致。配置以**均衡档为基底**逐字段覆盖：
+
+```rust
+use obfstr2::{cs_user, s_user};
+fn main() {
+
+    let greeting = s_user!(
+        {
+            prefer_stack: true,      // 堆 / 栈掷币的栈偏好
+            max_latency: 60,         // 单层延迟上限（>= 2）
+            min_security: 75,        // 组合安全度下限（<= 99，乘法累积）
+            junk_pct: 12,            // 垃圾块填充概率（0..=100）
+            pad_short: true,         // 短块（< 16B）强制 PKCS7 预填充
+        },
+        "custom-tier",
+    );
+    assert_eq!(&*greeting, "custom-tier");
+
+    // 空配置块 {} 等价于均衡档 s2!
+    assert_eq!(&*s_user!({}, "hello"), "hello");
+    // s_fmt_user! 的字面量片段走自定义档混淆
+    assert_eq!(cs_user!({ max_latency: 40 }, c"/bin/sh").to_str().ok(), Some("/bin/sh"));
+}
+```
+
+| 配置键                      | 取值                    | 说明                                                                           |
+|:----------------------------|:------------------------|:-------------------------------------------------------------------------------|
+| `prefer_stack`              | `bool`                  | 堆 / 栈掷币的栈偏好概率                                                        |
+| `max_latency`               | `u8`（≥ 2）             | 单层延迟上限                                                                   |
+| `min_security`              | `u8`（≤ 99）            | 组合安全度下限（乘法累积，达到即停）                                           |
+| `security_factor`           | `f64`（> 0.0 的有限值） | 单层安全度缩放系数：`< 1.0` 折减单层贡献（层数更多），`> 1.0` 放大（层数更少） |
+| `wrap_pct`                  | `0..=100`               | 逐层非内联包装概率                                                             |
+| `junk_pct`                  | `0..=100`               | 垃圾块填充概率                                                                 |
+| `cold_pct`                  | `0..=100`               | 冷数据延迟注入概率                                                             |
+| `pad_short`                 | `bool`                  | 短块（< 16B）强制 PKCS7 预填充                                                 |
+| `anti_disasm_pct`           | `0..=100`               | 反反汇编注入概率（需启用 `anti-disassembly` 特性）                             |
+| `anti_disasm_count_range`   | `lo..=hi`（u8）         | 反反汇编块数随机区间                                                           |
+| `anti_disasm_garbage_range` | `lo..=hi`（u8）         | 反反汇编垃圾字节基准随机区间                                                   |
+
+- 键支持 `key: val` 与 `key = val` 两种写法，逗号分隔，配置块内与载荷后均允许尾随逗号；
 
 ---
 
@@ -202,7 +247,7 @@ fn main() {
 [dependencies]
 obfstr2 = { version = "0.4", default-features = false }
 ```
-*注：关闭 `alloc` 后所有档位恒使用栈容器（`Stack*`）；若单块解密峰值体积超过 `STACK_BUDGET / 2`（默认 2 KiB），将在编译期直接报错提示调大 `budget-*`。*
+*注：关闭 `alloc` 后所有档位恒使用栈容器（`Stack*`）；若单块解密峰值体积超过 `STACK_BUDGET / 2`，将在编译期直接报错提示调大 `budget-*`。*
 
 ---
 
@@ -212,13 +257,13 @@ obfstr2 = { version = "0.4", default-features = false }
 
 以下为 1 KiB 载荷、512 次解密循环的单次实测样本（多态构建每次结果略有浮动，仅供量级参考）：
 
-| 用例                    | 单次去混淆耗时 | 512 次循环总耗时 | 增量构建耗时   | 冷构建耗时      | 产物体积（未 strip） | 宏展开代码量 (`cargo expand`) |
-|:------------------------|:---------------|:-----------------|:---------------|:----------------|:---------------------|:------------------------------|
-| **明文基线**            | —              | 10.35 ms         | 293 ms         | 0.72 s          | 435 KB (1.0x)        | 1.4 KB (1x)                   |
-| **CasualX `obfbytes!`** | ~0 µs          | 10.29 ms (-1%)   | 353 ms (+21%)  | 2.14 s (+199%)  | 438 KB (+1%)         | 7.6 KB (5x)                   |
-| **`obfstr2::b1!`**      | **19.66 µs**   | 20.42 ms (+97%)  | 695 ms (+138%) | 6.97 s (+872%)  | 483 KB (+11%)        | 74.0 KB (53x)                 |
-| **`obfstr2::b2!`**      | **569.86 µs**  | 302.12 ms (29x)  | 1.54 s (5.3x)  | 12.59 s (17.5x) | 610 KB (+40%)        | 238.7 KB (170x)               |
-| **`obfstr2::b3!`**      | **1319.54 µs** | 685.95 ms (66x)  | 2.72 s (9.3x)  | 9.76 s (13.6x)  | 838 KB (+93%)        | 566.1 KB (403x)               |
+| 用例              | 每次去混淆耗时 | 运行耗时（512 次解密循环，含启动开销） | 增量构建耗时          | 冷构建耗时            | 产物二进制（未 strip） | expand 字符数    |
+|:------------------|:---------------|:---------------------------------------|:----------------------|:----------------------|:-----------------------|:-----------------|
+| 明文基线          | —              | 10.30702ms                             | 171.832628ms          | 404.063369ms          | 445264                 | 1437             |
+| CasualX obfbytes! | 0.10µs         | 10.360403ms（1%）                      | 202.252557ms（18%）   | 1.280738746s（217%）  | 448304（1%）           | 7780（441%）     |
+| obfstr2 b1!       | 19.75µs        | 20.419212ms（98%）                     | 353.501118ms（106%）  | 4.838922938s（1098%） | 500664（12%）          | 77153（5269%）   |
+| obfstr2 b2!       | 317.91µs       | 173.078567ms（1579%）                  | 888.272897ms（417%）  | 4.005122498s（891%）  | 612816（38%）          | 224527（15525%） |
+| obfstr2 b3!       | 829.70µs       | 435.110996ms（4122%）                  | 2.436355796s（1318%） | 5.346699777s（1223%） | 838360（88%）          | 630688（43789%） |
 
 <details>
 <summary>点击查看基准测试参数与复现方式</summary>
@@ -267,8 +312,8 @@ cargo test --test perf -- --ignored --nocapture
 # 5. 存储策略与加密原语延迟/安全度校准（耗时较长，最后两项需配置 Python angr 环境）
 cd obfstr2-macros && cargo test --lib test_storages_latency -- --ignored --nocapture
 cd obfstr2-macros && cargo test --lib tests::crypto::test_cryptos_latency -- --ignored --nocapture
-cd obfstr2-macros && cargo test --lib tests::crypto::test_cryptos_security -- --ignored --nocapture
-ANGR_PYTHONPATH=/path/to/python-with-angr cargo test --test angr -- main --ignored --show-output
+ANGR_PYTHONPATH=/path/to/python-with-angr cargo cd obfstr2-macros && cargo test --lib tests::crypto::test_cryptos_security -- --ignored --nocapture
+ANGR_PYTHONPATH=/path/to/python-with-angr cargo test --test angr -- main --ignored --nocapture
 ```
 
 **提交前代码规范检查：**

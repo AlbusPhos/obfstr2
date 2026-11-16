@@ -4,9 +4,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! C 字符串档位入口：`cs1` / `cs2` / `cs3`（低延迟 / 均衡 / 高强度）。
+//! C 字符串档位入口：`cs1` / `cs2` / `cs3`（低延迟 / 均衡 / 高强度）与 `cs_user`（自定义档）。
 
-use super::{b1_full, b2_full, b3_full};
+use super::b_full;
+use crate::core::{TIER_BALANCED, TIER_HIGH, TIER_LOW, TierParams};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
@@ -16,10 +17,11 @@ fn with_nul(mut payload: Vec<u8>) -> Vec<u8> {
     payload
 }
 
-pub fn cs1(payload: Vec<u8>) -> Result<TokenStream2, String> {
-    // 容量 N 含结尾 `\0`；主容器族跟随 b1_full 的单次判定（alloc 下 1 档按 prefer_stack 掷币）。
+fn cs_impl(payload: Vec<u8>, tier: TierParams) -> Result<TokenStream2, String> {
+    // 容量 N 含结尾 `\0`；主容器族跟随 b_full 的单次判定（alloc 下按档位 prefer_stack 掷币）。
     let size = payload.len() + 1;
-    let obf = b1_full(with_nul(payload))?;
+    // 主容器族必须与 b_full 内部选择一致，才能用 from_inner_with_nul 零拷贝消费：
+    let obf = b_full(with_nul(payload), tier)?;
     let ts = obf.tokens;
     let main_type_path = if obf.main_is_heap {
         quote!(::obfstr2::types::cstr::HeapCStr)
@@ -33,122 +35,21 @@ pub fn cs1(payload: Vec<u8>) -> Result<TokenStream2, String> {
             unsafe { #main_type_path::<#size>::from_inner_with_nul(bytes).unwrap_unchecked() }
         }
     })
+}
+
+pub fn cs1(payload: Vec<u8>) -> Result<TokenStream2, String> {
+    cs_impl(payload, TIER_LOW)
 }
 
 pub fn cs2(payload: Vec<u8>) -> Result<TokenStream2, String> {
-    let size = payload.len() + 1;
-    // 主容器族必须与 b2 内部选择一致，才能用 from_inner_with_nul 零拷贝消费：
-    let obf = b2_full(with_nul(payload))?;
-    let ts = obf.tokens;
-    let main_type_path = if obf.main_is_heap {
-        quote!(::obfstr2::types::cstr::HeapCStr)
-    } else {
-        quote!(::obfstr2::types::cstr::StackCStr)
-    };
-
-    Ok(quote! {
-        {
-            let bytes = #ts;
-            unsafe { #main_type_path::<#size>::from_inner_with_nul(bytes).unwrap_unchecked() }
-        }
-    })
+    cs_impl(payload, TIER_BALANCED)
 }
 
 pub fn cs3(payload: Vec<u8>) -> Result<TokenStream2, String> {
-    let size = payload.len() + 1;
-    let obf = b3_full(with_nul(payload))?;
-    let ts = obf.tokens;
-    let main_type_path = if obf.main_is_heap {
-        quote!(::obfstr2::types::cstr::HeapCStr)
-    } else {
-        quote!(::obfstr2::types::cstr::StackCStr)
-    };
-
-    Ok(quote! {
-        {
-            let bytes = #ts;
-            unsafe { #main_type_path::<#size>::from_inner_with_nul(bytes).unwrap_unchecked() }
-        }
-    })
+    cs_impl(payload, TIER_HIGH)
 }
 
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::expect_used)]
-    use super::*;
-    use crate::parse::parse_cstr;
-
-    fn token(s: &str) -> TokenStream2 {
-        match s.parse() {
-            Ok(t) => t,
-            Err(e) => panic!("测试输入 {s:?} 不是合法 TokenStream: {e}"),
-        }
-    }
-
-    fn parse(s: &str) -> Vec<u8> {
-        match parse_cstr(token(s)) {
-            Ok(p) => p,
-            Err(e) => panic!("解析 {s:?} 失败: {e}"),
-        }
-    }
-
-    fn parse_err(s: &str) -> String {
-        match parse_cstr(token(s)) {
-            Ok(_) => panic!("{s:?} 应当解析失败"),
-            Err(e) => e.to_string(),
-        }
-    }
-
-    #[test]
-    fn three_literal_forms_agree() {
-        assert_eq!(parse(r#""hi""#), b"hi");
-        assert_eq!(parse(r#"c"hi""#), b"hi");
-        assert_eq!(parse(r#"b"hi""#), b"hi");
-        assert_eq!(parse(r#""""#), b"");
-        assert_eq!(parse(r#"c"""#), b"");
-        assert_eq!(parse(r#"b"""#), b"");
-        // Unicode 与转义由各自字面量语义展开
-        assert_eq!(parse(r#""你好""#), "你好".as_bytes());
-        assert_eq!(parse(r#"c"a\nb""#), b"a\nb");
-    }
-
-    #[test]
-    fn non_utf8_byte_str_accepted() {
-        // CStr 不校验 UTF-8：b"..." 可表达任意非 NUL 字节
-        assert_eq!(parse(r#"b"\xff\xfe""#), vec![0xFF, 0xFE]);
-    }
-
-    #[test]
-    fn interior_nul_rejected_with_position() {
-        let e = parse_err(r#""a\0b""#);
-        assert!(e.contains("内部 NUL") && e.contains("下标 1"), "实际: {e}");
-        let e = parse_err(r#"b"hi\0""#);
-        assert!(e.contains("内部 NUL"), "实际: {e}");
-        let e = parse_err(r#"b"\0""#);
-        assert!(e.contains("下标 0"), "实际: {e}");
-    }
-
-    #[test]
-    fn non_literal_rejected() {
-        let e = parse_err("concat!(\"a\", \"b\")");
-        assert!(e.contains("只接受字符串"), "实际: {e}");
-        let e = parse_err("42");
-        assert!(e.contains("只接受字符串"), "实际: {e}");
-    }
-
-    #[test]
-    fn polymorphic_two_expansions_differ() {
-        let a = cs2(b"poly".to_vec()).expect("cs2").to_string();
-        let b = cs2(b"poly".to_vec()).expect("cs2").to_string();
-        assert_ne!(a, b, "两次展开应多态不同");
-    }
-
-    #[test]
-    fn tiers_accept_empty_and_single_byte() {
-        for f in [cs1, cs2, cs3] {
-            // 空载荷 → 仅结尾 NUL 的单字节内核（N = 1）
-            assert!(!f(Vec::new()).expect("tier").is_empty());
-            assert!(!f(vec![0x61]).expect("tier").is_empty());
-        }
-    }
+/// 自定义档：以调用方给定的 `TierParams` 混淆 C 字符串载荷。
+pub fn cs_user(payload: Vec<u8>, tier: TierParams) -> Result<TokenStream2, String> {
+    cs_impl(payload, tier)
 }

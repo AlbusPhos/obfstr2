@@ -754,6 +754,27 @@ fn i1_nostd_no_alloc() {
 }
 
 #[test]
+fn b_user_nostd_no_alloc() {
+    // 自定义档：配置块 + 栈偏好 + 自定义延迟 / 安全度，128 × 'a'，关闭默认特性
+    let lit = "a".repeat(128);
+    let call = format!(
+        r#"obfstr2::b_user!({{ prefer_stack: true, max_latency: 40, min_security: 60 }}, b"{lit}")"#
+    );
+    run_nostd(&call, &obfstr2_dep(true), ('a', 128), "b_user_nostd");
+}
+
+#[test]
+fn i_user_nostd_no_alloc() {
+    // 自定义档整数链路：0x61616161u32 小端即 4 × 'a'，纯栈、无堆、关闭默认特性
+    run_nostd_int(
+        "obfstr2::i_user!({ prefer_stack: true, max_latency: 40 }, 0x61616161u32)",
+        &obfstr2_dep(true),
+        b"aaaa",
+        "i_user_nostd",
+    );
+}
+
+#[test]
 fn fl1_nostd_no_alloc() {
     // 1.5f32 的小端位字节 hex（"0000c03f"），纯栈、无堆、关闭默认特性
     let expected_hex: String = 1.5f32

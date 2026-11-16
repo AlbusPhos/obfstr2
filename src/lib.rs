@@ -599,3 +599,240 @@ macro_rules! w3 {
         ::obfstr2::obfstr2_macros::w3!($($tt)*)
     };
 }
+
+// ── `*_user` 自定义档：`({ 配置 }, 载荷)` ──────────────────────────────────
+
+/// 字符串混淆宏（自定义档）。
+///
+/// 首参数为花括号配置块 `{ key: val, ... }`，次参数为字符串字面量 `"..."`。
+/// 配置以均衡档（`s2`）为基底逐字段覆盖，展开类型规则同 [`s2`](s2!())，请使用类型推断。
+///
+/// 可用配置键（键支持 `key: val` 或 `key = val`，逗号分隔，允许尾随逗号，重复键报错）：
+///
+/// | 键 | 取值 | 说明 |
+/// |---|---|---|
+/// | `prefer_stack` | `bool` | 堆 / 栈掷币的栈偏好概率 |
+/// | `max_latency` | `u8`（≥ 2） | 单层延迟上限 |
+/// | `min_security` | `u8`（≤ 99） | 组合安全度下限（乘法累积，达到即停） |
+/// | `security_factor` | `f64`（> 0.0 的有限值） | 单层安全度缩放系数：`< 1.0` 折减单层贡献（层数更多），`> 1.0` 放大（层数更少） |
+/// | `wrap_pct` | `0..=100` | 逐层非内联包装概率 |
+/// | `junk_pct` | `0..=100` | 垃圾块填充概率 |
+/// | `cold_pct` | `0..=100` | 冷数据延迟注入概率 |
+/// | `pad_short` | `bool` | 短块（< 16B）强制 PKCS7 预填充 |
+/// | `anti_disasm_pct` | `0..=100` | 反反汇编注入概率（需启用 `anti-disassembly` 特性） |
+/// | `anti_disasm_count_range` | `lo..=hi`（u8） | 反反汇编块数随机区间 |
+/// | `anti_disasm_garbage_range` | `lo..=hi`（u8） | 反反汇编垃圾字节基准随机区间 |
+///
+/// # Warning
+///
+/// 本族宏为实验性 API：配置键集合可能随版本增删，依赖前请阅读 CHANGELOG。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::s_user;
+///
+/// let s = s_user!({ max_latency: 50, min_security: 70 }, "hello");
+/// assert_eq!(&*s, "hello");
+///
+/// // 空配置块等价于均衡档 s2!
+/// let t = s_user!({}, "hello");
+/// assert_eq!(&*t, "hello");
+///
+/// // 多行书写支持配置块内与载荷末尾的尾随逗号
+/// let u = s_user!(
+///     {
+///         prefer_stack: true,
+///         junk_pct: 10,
+///     },
+///     "hello",
+/// );
+/// assert_eq!(&*u, "hello");
+/// ```
+#[macro_export]
+macro_rules! s_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::s_user!($($tt)*)
+    };
+}
+
+/// 字节串混淆宏（自定义档）。
+///
+/// 首参数为花括号配置块 `{ key: val, ... }`（配置键见 [`s_user`](s_user!())），
+/// 次参数为字节串字面量 `b"..."` 或字节数组 `[0x41, 66, ...]`（元素须为 0..=255
+/// 的整数字面量），展开为求值即得原文的字节容器表达式
+/// （`StackBytes<N>` / `HeapBytes<N>`，可解引用为 `[u8]`）。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::b_user;
+///
+/// let a = b_user!({ prefer_stack: true }, b"abc");
+/// let b = b_user!({}, [0x61, 98, 99]);
+/// assert_eq!(&*a, &*b);
+/// assert_eq!(&*a, b"abc");
+/// ```
+#[macro_export]
+macro_rules! b_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::b_user!($($tt)*)
+    };
+}
+
+/// 文件混淆宏（自定义档）。
+///
+/// 首参数为花括号配置块 `{ key: val, ... }`（配置键见 [`s_user`](s_user!())），
+/// 次参数为文件路径字面量（如 `"assets/fixture.bin"`，相对于被编译 crate 的
+/// `CARGO_MANIFEST_DIR` 解析），编译期读入文件内容并混淆，展开为求值即得
+/// 文件原文的字节容器表达式（`StackBytes<N>` / `HeapBytes<N>`）。
+/// 需自行保证文件存在；文件缺失或不可读时报编译错误。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::f_user;
+///
+/// let b = f_user!({ prefer_stack: true }, "assets/fixture.bin");
+/// assert_eq!(&*b, b"secret");
+/// ```
+#[macro_export]
+macro_rules! f_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::f_user!($($tt)*)
+    };
+}
+
+/// 格式化字符串混淆宏（自定义档）。
+///
+/// 首参数为花括号配置块 `{ key: val, ... }`（配置键见 [`s_user`](s_user!())），
+/// 其后与 [`s_fmt1`](s_fmt1!()) 相同：格式串中的字面量片段逐个按自定义档混淆后
+/// 注入 `format!` 调用，占位符与后续参数原样保留。返回 `String`，需要调用方有
+/// `alloc`（`no_std` 可用）。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::s_fmt_user;
+///
+/// let name = "world";
+/// let s = s_fmt_user!({ max_latency: 50 }, "hello, {}!", name);
+/// assert_eq!(s, "hello, world!");
+/// ```
+#[macro_export]
+macro_rules! s_fmt_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::s_fmt_user!($($tt)*)
+    };
+}
+
+/// 整数混淆宏（自定义档）。
+///
+/// 首参数为花括号配置块 `{ key: val, ... }`（配置键见 [`s_user`](s_user!())），
+/// 次参数为整数字面量（如 `42u8`、`-1`、`0xFFu16`，空后缀视为 `i32`），
+/// 展开为求值即得原文的裸整数表达式。注意：返回裸值，无 `Drop` 自动清零
+/// （与 `StackStr` 不同）。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::i_user;
+///
+/// assert_eq!(i_user!({ max_latency: 50 }, 42u8), 42u8);
+/// assert_eq!(i_user!({}, -1), -1i32);
+/// assert_eq!(i_user!({ min_security: 70 }, 0xFFu16), 0xFFu16);
+/// ```
+#[macro_export]
+macro_rules! i_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::i_user!($($tt)*)
+    };
+}
+
+/// 浮点混淆宏（自定义档）。
+///
+/// 首参数为花括号配置块 `{ key: val, ... }`（配置键见 [`s_user`](s_user!())），
+/// 次参数为浮点字面量（如 `3.14f32`、`-1.0`、`1e10`，空后缀视为 `f64`），
+/// 展开为求值即得原文的裸浮点表达式。仅接受有限常规值：`inf` / `NaN` 一律拒绝；
+/// `-0.0` 按位保留符号位。注意：返回裸值，无 `Drop` 自动清零。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::fl_user;
+///
+/// assert_eq!(fl_user!({ max_latency: 50 }, 1.5f32).to_bits(), 1.5f32.to_bits());
+/// assert_eq!(fl_user!({}, -0.0).to_bits(), (-0.0f64).to_bits());
+/// ```
+#[macro_export]
+macro_rules! fl_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::fl_user!($($tt)*)
+    };
+}
+
+/// C 字符串混淆宏（自定义档）。
+///
+/// 首参数为花括号配置块 `{ key: val, ... }`（配置键见 [`s_user`](s_user!())），
+/// 次参数输入与展开规则同 [`cs2`](cs2!())（接受 `"..."` / `c"..."` / `b"..."`，
+/// 载荷禁内部 NUL，宏追加唯一的结尾 `\0`）。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::cs_user;
+///
+/// let a = cs_user!({ prefer_stack: true }, "/bin/sh");
+/// let b = cs_user!({}, c"/bin/sh");
+/// assert_eq!(&*a, c"/bin/sh");
+/// assert_eq!(&*b, c"/bin/sh");
+/// ```
+#[macro_export]
+macro_rules! cs_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::cs_user!($($tt)*)
+    };
+}
+
+/// 宽字符串混淆宏（自定义档）。
+///
+/// 首参数为花括号配置块 `{ key: val, ... }`（配置键见 [`s_user`](s_user!())），
+/// 次参数输入与展开规则同 [`w2`](w2!())（UTF-16 码元，不追加结尾 NUL，
+/// 允许内部 NUL）。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::w_user;
+///
+/// let ws = w_user!({ prefer_stack: true }, "a\0b");
+/// assert_eq!(&*ws, &[0x61u16, 0, 0x62][..]);
+/// ```
+#[macro_export]
+macro_rules! w_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::w_user!($($tt)*)
+    };
+}
+
+/// 宽 C 字符串混淆宏（自定义档）。
+///
+/// 首参数为花括号配置块 `{ key: val, ... }`（配置键见 [`s_user`](s_user!())），
+/// 次参数输入与展开规则同 [`cw2`](cw2!())（UTF-16 码元 + 自动结尾 `0u16`，
+/// 载荷禁内部 NUL）。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::cw_user;
+///
+/// let w = cw_user!({ min_security: 70 }, "kernel32.dll");
+/// assert_eq!(&w[..w.len() - 1], "kernel32.dll".encode_utf16().collect::<Vec<_>>().as_slice());
+/// assert_eq!(w[w.len() - 1], 0);
+/// ```
+#[macro_export]
+macro_rules! cw_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::cw_user!($($tt)*)
+    };
+}

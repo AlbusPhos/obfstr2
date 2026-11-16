@@ -36,6 +36,70 @@ fn bytes_array_out_of_range_rejected() {
 }
 
 #[test]
+fn user_unknown_field_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _s = obfstr2::s_user!({ unknown_field: 1 }, "hi"); }"#,
+        "未知的 TierParams 字段",
+        "s-user-unknown",
+    );
+}
+
+#[test]
+fn user_duplicate_field_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _s = obfstr2::s_user!({ wrap_pct: 10, wrap_pct: 20 }, "hi"); }"#,
+        "重复配置字段",
+        "s-user-dup",
+    );
+}
+
+#[test]
+fn user_min_security_deadloop_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _n = obfstr2::i_user!({ min_security: 100 }, 42u32); }"#,
+        "min_security 不能 >= 100",
+        "i-user-deadloop",
+    );
+}
+
+#[test]
+fn user_inverted_range_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _f = obfstr2::fl_user!({ anti_disasm_count_range: 5..=1 }, 3.14); }"#,
+        "不能大于上界",
+        "fl-user-range",
+    );
+}
+
+#[test]
+fn user_missing_comma_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _s = obfstr2::s_user!({} "hi"); }"#,
+        "后缺少逗号",
+        "s-user-comma",
+    );
+}
+
+#[test]
+fn user_brace_required_rejected() {
+    assert_compile_fail(
+        r#"fn main() { let _s = obfstr2::s_user!("hi"); }"#,
+        "第一个参数必须是花括号配置块",
+        "s-user-brace",
+    );
+}
+
+#[test]
+fn user_payload_rejects_expression() {
+    // 与 sN! 一致：s 系载荷经 syn::LitStr 直接解析，非字面量报 syn 的标准文案
+    assert_compile_fail(
+        r#"fn main() { let x = String::from("hi"); let _s = obfstr2::s_user!({}, x); }"#,
+        "expected string literal",
+        "s-user-expr",
+    );
+}
+
+#[test]
 fn bytes_array_non_literal_rejected() {
     assert_compile_fail(
         r#"fn main() { let x = 1u8; let _b = obfstr2::b2!([x]); }"#,

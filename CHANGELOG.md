@@ -10,6 +10,17 @@
 
 ---
 
+## [0.4.4] - 2026-11-16
+
+### Added
+- 新增 `*_user!` 自定义档宏家族（实验性）：`s_user!` / `b_user!` / `f_user!` / `i_user!` / `fl_user!` / `cs_user!` / `w_user!` / `cw_user!` / `s_fmt_user!` 统一为 `({ 配置 }, 载荷)` 两参形态，首参数为花括号配置块 `{ key: val, ... }`，以均衡档为基底逐字段覆盖档位参数（`prefer_stack` / `max_latency` / `min_security` / `security_factor` / `wrap_pct` / `junk_pct` / `cold_pct` / `pad_short` / `anti_disasm_pct` / `anti_disasm_count_range` / `anti_disasm_garbage_range`，支持 `:` 与 `=` 两种赋值写法及尾随逗号）
+- `TierParams` 新增 `security_factor` 字段（默认 1.0，三档内置常量不受影响）：选层循环将单层安全度乘以该系数并钳位到 `[0.0, 100.0]` 后再累积组合安全度——`< 1.0` 迫使叠加更多加密层，`> 1.0` 更快达到 `min_security`；`validate()` 拒绝 `<= 0.0` 或非有限值（防选层死循环），离线模拟测试的组合安全度复算口径同步纳入该系数
+- 编排层配套：`TierParams` 新增 `validate()` 编译期校验（`min_security <= 99` 防选层死循环、`max_latency >= 2` 保原语池非空、百分比字段 `0..=100`、倒置区间拒绝）；`build_obfuscated_bytes` 支持以任意自定义 `TierParams` 驱动，各类型档位入口收敛为 `*_impl(载荷, TierParams)` 内核（`s1/s2/s3` 等现有宏行为不变）
+- `obfstr2-macros::fmt::sfmt` 的字面量片段构建参数由函数指针放宽为 `impl Fn`，支持 `s_fmt_user!` 以闭包捕获自定义档位；现有 `s_fmt1/2/3` 调用点不受影响
+
+### Changed
+- 代码规范：`obfstr2-macros` 的单元测试统一收拢至 `src/tests/` 目录——原 `core.rs`、`fmt.rs`、`types/{bytes,cstr,cwstr,wstr,int,float}.rs` 末尾的内联 `#[cfg(test)] mod tests` 全部迁入镜像结构的 `tests/core.rs`、`tests/fmt.rs`、`tests/types/{bytes,cstr,cwstr,wstr,int,float}.rs`，由 `tests/mod.rs` 统一挂载（与既有 `tests/crypto.rs` / `tests/storage.rs` / `tests/user.rs` 并列）；被测的内部项 `encrypt_layers` / `effective_wrap_pct` / `fold_chunk_nodes` / `FOLD_GROUP_MAX` / `ChunkNode`（含 `stmt` 字段）提升为 `pub(crate)`，沿用 `tests/crypto.rs` 访问 `crate::crypto::CRYPTOS` 的既有约定；测试数量与覆盖范围不变（73 个）
+
 ## [0.4.3] - 2026-11-16
 
 ### Changed
@@ -113,7 +124,8 @@
 - 引入现代对称密码学设计要素（SPN、动态 S 盒 / P 盒、ARX、雪崩效应）以对抗 `angr` 等符号执行工具
 - 字符串 / 字节 / CStr 容器在离开作用域时执行 Volatile 擦除
 
-[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.0...v0.4.1
