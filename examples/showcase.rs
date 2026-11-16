@@ -5,7 +5,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use obfstr2::types::str::Str;
-use obfstr2::{b1, b3, cs2, f2, fl2, i1, i2, i3, s_fmt2, s_user, s1, s2, s3};
+use obfstr2::{b1, b3, cs2, f2, fl2, i1, i2, i3, s_fmt2, s_user, s1, s2};
 
 /// 自定义一个极高强度混淆
 macro_rules! s4 {
