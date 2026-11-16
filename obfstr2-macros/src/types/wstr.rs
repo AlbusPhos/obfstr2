@@ -5,59 +5,49 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! 宽字符串档位入口：`w1` / `w2` / `w3`（低延迟 / 均衡 / 高强度）。
-//!
-//! 与 `cw1` / `cw2` / `cw3` 的区别：
-//!
-//! - **不追加结尾 `0u16`**，`N` 即 UTF-16 码元数（空串 `N = 0`）；
-//! - **不限制内部 NUL**，`U+0000` 作为普通码元保留（适合长度前缀 / 显式长度 API，
-//!   或需要把 NUL 作为数据的一部分的场景）；
-//! - 因此返回值不保证以 NUL 结尾，**不要**直接传给需要 `PCWSTR` 的 Win32 API；
-//!   NUL 结尾需求请使用 `cwN!`。
-//!
-//! 其余链路与宽 C 字符串完全一致：`encode_utf16` → 小端字节流 → `bN!` 混淆 →
-//! 运行时 `extend_from_zeroable_primitive_slice_le` 还原为 `StackU16<N>` /
-//! `HeapU16<N>`，中转字节容器立即擦除，外层容器 `Drop` 自动清零。
 
-use super::{b1, b2, b3, want_heap};
+use super::{b1_full, b2_full, b3_full};
 use crate::parse::ParsedWide;
 use crate::utils::{wide_to_le, wrap_wide};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
 pub(crate) fn w1(parsed: ParsedWide) -> Result<TokenStream2, String> {
-    // 纯栈、无堆（nostd 可用），与 b1/s1/cs1/cw1 同策略。
     let ParsedWide { units } = parsed;
     let n = units.len();
-    let ts = b1(wide_to_le(&units))?;
-    Ok(wrap_wide(ts, n, quote!(::obfstr2::types::buffer::StackU16)))
+    let obf = b1_full(wide_to_le(&units))?;
+    let main_type_path = if obf.main_is_heap {
+        quote!(::obfstr2::types::buffer::HeapU16)
+    } else {
+        quote!(::obfstr2::types::buffer::StackU16)
+    };
+    Ok(wrap_wide(obf.tokens, n, main_type_path))
 }
 
 pub(crate) fn w2(parsed: ParsedWide) -> Result<TokenStream2, String> {
     let ParsedWide { units } = parsed;
     let n = units.len();
-    let ts = b2(wide_to_le(&units))?;
-
-    let main_type_path = if want_heap() {
+    let obf = b2_full(wide_to_le(&units))?;
+    let main_type_path = if obf.main_is_heap {
         quote!(::obfstr2::types::buffer::HeapU16)
     } else {
         quote!(::obfstr2::types::buffer::StackU16)
     };
 
-    Ok(wrap_wide(ts, n, main_type_path))
+    Ok(wrap_wide(obf.tokens, n, main_type_path))
 }
 
 pub(crate) fn w3(parsed: ParsedWide) -> Result<TokenStream2, String> {
     let ParsedWide { units } = parsed;
     let n = units.len();
-    let ts = b3(wide_to_le(&units))?;
-
-    let main_type_path = if cfg!(feature = "alloc") {
+    let obf = b3_full(wide_to_le(&units))?;
+    let main_type_path = if obf.main_is_heap {
         quote!(::obfstr2::types::buffer::HeapU16)
     } else {
         quote!(::obfstr2::types::buffer::StackU16)
     };
 
-    Ok(wrap_wide(ts, n, main_type_path))
+    Ok(wrap_wide(obf.tokens, n, main_type_path))
 }
 
 #[cfg(test)]

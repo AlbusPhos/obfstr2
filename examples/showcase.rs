@@ -5,7 +5,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use obfstr2::types::str::Str;
-use obfstr2::{b3, cs2, f2, fl2, i1, i2, i3, s_fmt2, s1, s2, s3};
+use obfstr2::{b1, b3, cs2, f2, fl2, i1, i2, i3, s_fmt2, s1, s2, s3};
 
 /// 应用身份：名称 / 版本 / 发布通道。
 fn app_identity() -> (Box<dyn Str>, Box<dyn Str>, Box<dyn Str>) {
@@ -95,5 +95,5 @@ fn main() {
     let scheme = s2!("https://");
     assert!(endpoint.starts_with(&*scheme));
     assert_eq!(&*s1!("stable"), channel.as_str());
-    assert_eq!(&*magic, b"ORBIT");
+    assert_eq!(&*magic, &*b1!(b"ORBIT"));
 }

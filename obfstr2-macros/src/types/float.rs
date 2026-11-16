@@ -5,24 +5,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! 浮点档位入口：`fl1` / `fl2` / `fl3`（低延迟 / 均衡 / 高强度）。
-//!
-//! 注册表见 `crate::crypto` / `crate::storage`，编排见 `crate::core`，
-//! 本文件只保留浮点编码（解码表达式）与档位入口；解析见 `crate::parse`。
-//!
-//! 设计：浮点 `to_bits().to_le_bytes() -> Vec<u8>` 喂入 `build_obfuscated_bytes`，
-//! 运行时解密为字节容器后再 `from_le_bytes` + `from_bits` 还原为裸浮点值。
-//! 返回裸值（可直接算术/比较），不提供 `Drop` 自动清零（与 `StackStr` 差异见文档）。
-//! 仅接受有限常规值：`inf`/`NaN` 一律拒绝（前者请用 `INFINITY` 常量，后者无字面量写法）；
-//! `-0.0` 按位保留符号位。
 
-use super::want_heap;
 use crate::core::{TIER_BALANCED, TIER_HIGH, TIER_LOW, build_obfuscated_bytes};
 use crate::parse::{FloatTy, ParsedFloat};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
-/// 解码表达式：字节容器 `->` 裸浮点。调用方已处于 `unsafe` 块内
-/// （长度恒为 4/8，展开期已验证），直接用 `unwrap_unchecked`（与 `int.rs` 同策略）。
 fn decode_expr(ty: FloatTy) -> TokenStream2 {
     match ty {
         FloatTy::F32 => quote!(::core::primitive::f32::from_bits(
@@ -49,32 +37,17 @@ fn build_float(parsed: ParsedFloat, inner: TokenStream2) -> TokenStream2 {
 }
 
 pub fn fl1(parsed: ParsedFloat) -> Result<TokenStream2, String> {
-    let inner = build_obfuscated_bytes(
-        parsed.bytes.clone(),
-        TIER_LOW,
-        false, // nostd可用
-        true,
-    )?;
+    let inner = build_obfuscated_bytes(parsed.bytes.clone(), TIER_LOW)?.tokens;
     Ok(build_float(parsed, inner))
 }
 
 pub fn fl2(parsed: ParsedFloat) -> Result<TokenStream2, String> {
-    let inner = build_obfuscated_bytes(
-        parsed.bytes.clone(),
-        TIER_BALANCED,
-        cfg!(feature = "alloc"),
-        want_heap(),
-    )?;
+    let inner = build_obfuscated_bytes(parsed.bytes.clone(), TIER_BALANCED)?.tokens;
     Ok(build_float(parsed, inner))
 }
 
 pub fn fl3(parsed: ParsedFloat) -> Result<TokenStream2, String> {
-    let inner = build_obfuscated_bytes(
-        parsed.bytes.clone(),
-        TIER_HIGH,
-        cfg!(feature = "alloc"),
-        cfg!(feature = "alloc"),
-    )?;
+    let inner = build_obfuscated_bytes(parsed.bytes.clone(), TIER_HIGH)?.tokens;
     Ok(build_float(parsed, inner))
 }
 

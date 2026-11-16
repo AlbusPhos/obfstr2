@@ -10,11 +10,15 @@
 
 ---
 
-## [Unreleased]
+## [0.4.2] - 2026-11-16
 
 ### Changed
-- hb2_storage_text中的result_str从from_utf8(out).expect改为使用from_utf8_lossy避免expect。
-
+- 容器堆栈判定收拢至档位：`build_obfuscated_bytes` 移除散装的 `allow_heap` / `prefer_stack` 参数（签名收敛为 `(载荷, TierParams)` 两参），堆 / 栈判定统一由 `TierParams.prefer_stack` 字段与新增的 `use_heap(size, is_main, prefer_stack)` 完成——`alloc` 下 ≤16B 恒栈、达到预算（主容器 `STACK_BUDGET`，chunk 中间容器减半）恒堆，其间按档位掷币（1 档栈概率 76%、2 / 3 档 40%）；`alloc` 关闭时超预算编译期报错，垃圾块超预算保持静默跳过
+- 主容器决策上浮：`build_obfuscated_bytes` 返回 `ObfuscatedBytes { tokens, main_is_heap }`，`cs!` / `s!` / `w!` / `cw!` 系外层容器族统一跟随内层的单次判定，删除 `want_heap()` 与 `b2_forced` 逃生门；消除内外两侧独立掷币导致外层零拷贝容器（`from_inner_with_nul`）与内层主容器族错配的风险
+- 档位堆栈分布调整：`alloc` 下 1 档不再恒纯栈（>16B 载荷约 24% 走堆）、2 档 ≤16B 载荷恒栈而 >16B 时 60% 走堆、3 档主容器由恒堆调整为 60% 走堆；`i3` / `fl3` 主容器语义自此与 `b3` / `s3` / `cs3` 对齐
+- `TierParams` 反反汇编区间参数改为 `RangeInclusive<u8>` 类型（档位常量以 `1..=2` 形式直书区间），`encrypt_layers` 与各编排函数统一接收 `&TierParams`，并移除不再需要的 `#[allow(unused)]`
+- HB2 空白隐写编码结果的 UTF-8 处理由 `from_utf8(out).expect(...)` 改为 `String::from_utf8_lossy`（理论上不可达的错误路径，非法序列以 U+FFFD 替换而非编译期 panic）
+- 文档：README / README_en 新增"堆栈路由"说明，修正 `w1!` / `cw1!` 档位描述与特性注意事项
 
 ## [0.4.1] - 2026-11-15
 
@@ -104,7 +108,8 @@
 - 引入现代对称密码学设计要素（SPN、动态 S 盒 / P 盒、ARX、雪崩效应）以对抗 `angr` 等符号执行工具
 - 字符串 / 字节 / CStr 容器在离开作用域时执行 Volatile 擦除
 
-[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/AlbusPhos/obfstr2/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/AlbusPhos/obfstr2/compare/v0.3.2...v0.3.3

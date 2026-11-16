@@ -5,20 +5,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! C 字符串档位入口：`cs1` / `cs2` / `cs3`（低延迟 / 均衡 / 高强度）。
-//!
-//! 注册表见 `crate::crypto` / `crate::storage`，编排见 `crate::core`，
-//! 本文件只保留 C 字符串 NUL 语义与档位入口；解析见 `crate::parse`。
-//!
-//! 设计：字面量载荷（不含 `\0`，编译期拒绝任何内部 NUL）追加结尾 `\0` 后
-//! 喂入 `build_obfuscated_bytes`（经 `b1`/`b2`/`b3` 档位入口），运行时解密为
-//! 字节容器后再经 `StackCStr` / `HeapCStr::from_inner_with_nul` 零拷贝还原
-//! （首 NUL 截断，调用方已处于 `unsafe` 块内、长度恒为载荷+1，
-//! 故直接用 `unwrap_unchecked` 保持零运行时校验，与 `str.rs` 同策略）。
-//! `N` 含结尾 `\0`（`N >= 1`，空串即 `N = 1`）；返回自有容器，`Drop` 自动清零。
-//! 非 UTF-8 载荷请用 `b"..."` 形态（`CStr` 只校验 NUL 语义，不校验 UTF-8）。
 
-use super::bytes::b2_forced;
-use super::{b1, b3, want_heap};
+use super::{b1_full, b2_full, b3_full};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
@@ -29,25 +17,30 @@ fn with_nul(mut payload: Vec<u8>) -> Vec<u8> {
 }
 
 pub fn cs1(payload: Vec<u8>) -> Result<TokenStream2, String> {
-    // 容量 N 含结尾 `\0`；纯栈、无堆（nostd 可用），与 b1/s1 同策略。
+    // 容量 N 含结尾 `\0`；主容器族跟随 b1_full 的单次判定（alloc 下 1 档按 prefer_stack 掷币）。
     let size = payload.len() + 1;
-    let ts = b1(with_nul(payload))?;
+    let obf = b1_full(with_nul(payload))?;
+    let ts = obf.tokens;
+    let main_type_path = if obf.main_is_heap {
+        quote!(::obfstr2::types::cstr::HeapCStr)
+    } else {
+        quote!(::obfstr2::types::cstr::StackCStr)
+    };
 
     Ok(quote! {
         {
             let bytes = #ts;
-            unsafe { ::obfstr2::types::cstr::StackCStr::<#size>::from_inner_with_nul(bytes).unwrap_unchecked() }
+            unsafe { #main_type_path::<#size>::from_inner_with_nul(bytes).unwrap_unchecked() }
         }
     })
 }
 
 pub fn cs2(payload: Vec<u8>) -> Result<TokenStream2, String> {
     let size = payload.len() + 1;
-    // 主容器族必须与 b2 内部选择一致，才能用 from_inner_with_nul 零拷贝消费。
-    let heap = cfg!(feature = "alloc") && (want_heap() || size >= crate::core::STACK_BUDGET);
-    let ts = b2_forced(with_nul(payload), heap)?;
-
-    let main_type_path = if heap {
+    // 主容器族必须与 b2 内部选择一致，才能用 from_inner_with_nul 零拷贝消费：
+    let obf = b2_full(with_nul(payload))?;
+    let ts = obf.tokens;
+    let main_type_path = if obf.main_is_heap {
         quote!(::obfstr2::types::cstr::HeapCStr)
     } else {
         quote!(::obfstr2::types::cstr::StackCStr)
@@ -63,9 +56,9 @@ pub fn cs2(payload: Vec<u8>) -> Result<TokenStream2, String> {
 
 pub fn cs3(payload: Vec<u8>) -> Result<TokenStream2, String> {
     let size = payload.len() + 1;
-    let ts = b3(with_nul(payload))?;
-
-    let main_type_path = if cfg!(feature = "alloc") {
+    let obf = b3_full(with_nul(payload))?;
+    let ts = obf.tokens;
+    let main_type_path = if obf.main_is_heap {
         quote!(::obfstr2::types::cstr::HeapCStr)
     } else {
         quote!(::obfstr2::types::cstr::StackCStr)

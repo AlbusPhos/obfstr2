@@ -5,25 +5,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! 整数档位入口：`i1` / `i2` / `i3`（低延迟 / 均衡 / 高强度）。
-//!
-//! 注册表见 `crate::crypto` / `crate::storage`，编排见 `crate::core`，
-//! 本文件只保留整数编码（解码表达式）与档位入口；解析见 `crate::parse`。
-//!
-//! 设计：整数 `to_le_bytes() -> Vec<u8>` 喂入 `build_obfuscated_bytes`，
-//! 运行时解密为字节容器后再 `from_le_bytes` 还原为裸整数值。
-//! 返回裸值（可直接算术/比较），不提供 `Drop` 自动清零（与 `StackStr` 差异见文档）。
 
-use super::want_heap;
 use crate::core::{TIER_BALANCED, TIER_HIGH, TIER_LOW, build_obfuscated_bytes};
 use crate::parse::{IntTy, ParsedInt};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
 /// 解码表达式：字节容器 `->` 裸整数。`usize/isize` 经 `u64/i64` 中转（64 位语义）。
-///
-/// 调用方已处于 `unsafe` 块内（长度恒为 1/2/4/8/16，展开期已验证），
-/// 故直接用 `unwrap_unchecked` 保持零运行时校验（与 `str.rs` 同策略）。
-/// 小端解码单臂生成：除 `usize` / `isize` 需经 `u64` / `i64` 中转（64 位语义）外，其余类型直解。
 macro_rules! decode_le {
     ($ty:ty) => {
         quote!(::core::primitive::$ty::from_le_bytes(
@@ -67,32 +55,17 @@ fn build_int(parsed: ParsedInt, inner: TokenStream2) -> TokenStream2 {
 }
 
 pub fn i1(parsed: ParsedInt) -> Result<TokenStream2, String> {
-    let inner = build_obfuscated_bytes(
-        parsed.bytes.clone(),
-        TIER_LOW,
-        false, // nostd可用
-        true,
-    )?;
+    let inner = build_obfuscated_bytes(parsed.bytes.clone(), TIER_LOW)?.tokens;
     Ok(build_int(parsed, inner))
 }
 
 pub fn i2(parsed: ParsedInt) -> Result<TokenStream2, String> {
-    let inner = build_obfuscated_bytes(
-        parsed.bytes.clone(),
-        TIER_BALANCED,
-        cfg!(feature = "alloc"),
-        want_heap(),
-    )?;
+    let inner = build_obfuscated_bytes(parsed.bytes.clone(), TIER_BALANCED)?.tokens;
     Ok(build_int(parsed, inner))
 }
 
 pub fn i3(parsed: ParsedInt) -> Result<TokenStream2, String> {
-    let inner = build_obfuscated_bytes(
-        parsed.bytes.clone(),
-        TIER_HIGH,
-        cfg!(feature = "alloc"),
-        cfg!(feature = "alloc"),
-    )?;
+    let inner = build_obfuscated_bytes(parsed.bytes.clone(), TIER_HIGH)?.tokens;
     Ok(build_int(parsed, inner))
 }
 

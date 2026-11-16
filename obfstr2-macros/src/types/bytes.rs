@@ -4,41 +4,33 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! 字节档位入口：`b1` / `b2` / `b3`（低延迟 / 均衡 / 高强度）。
-//!
-//! 注册表见 `crate::crypto` / `crate::storage`，编排见 `crate::core`，
-//! 本文件只保留档位参数与测试。
-
-use crate::core::{TIER_BALANCED, TIER_HIGH, TIER_LOW, build_obfuscated_bytes};
-use lib_unknown::rand::core::random;
+use crate::core::{ObfuscatedBytes, TIER_BALANCED, TIER_HIGH, TIER_LOW, build_obfuscated_bytes};
 use proc_macro2::TokenStream as TokenStream2;
 
-/// 均衡档的堆栈二选一：`str.rs` / `cstr.rs` 的主容器策略复用此处，保持档位语义一致。
-pub(crate) fn want_heap() -> bool {
-    cfg!(feature = "alloc") && random()
+/// 供 `cs` / `s` / `w` / `cw` 外层包装复用：随 Token 流一并提供主容器族决策，
+/// 外层容器族与内层严格一致（判定只在 `build_obfuscated_bytes` 内做一次）。
+pub(crate) fn b1_full(input: Vec<u8>) -> Result<ObfuscatedBytes, String> {
+    build_obfuscated_bytes(input, TIER_LOW)
+}
+
+pub(crate) fn b2_full(input: Vec<u8>) -> Result<ObfuscatedBytes, String> {
+    build_obfuscated_bytes(input, TIER_BALANCED)
+}
+
+pub(crate) fn b3_full(input: Vec<u8>) -> Result<ObfuscatedBytes, String> {
+    build_obfuscated_bytes(input, TIER_HIGH)
 }
 
 pub fn b1(input: Vec<u8>) -> Result<TokenStream2, String> {
-    build_obfuscated_bytes(
-        input, TIER_LOW, false, // nostd可用
-        true,
-    )
+    Ok(b1_full(input)?.tokens)
 }
 
 pub fn b2(input: Vec<u8>) -> Result<TokenStream2, String> {
-    build_obfuscated_bytes(input, TIER_BALANCED, cfg!(feature = "alloc"), !want_heap())
-}
-
-/// 供 `cs2!` 等需要零拷贝消费主容器的包装复用：由调用方一次性决定主容器族，
-/// 避免 `b2` 内部与包装层各自随机导致具体类型不匹配。
-pub(crate) fn b2_forced(input: Vec<u8>, heap: bool) -> Result<TokenStream2, String> {
-    build_obfuscated_bytes(input, TIER_BALANCED, cfg!(feature = "alloc"), !heap)
+    Ok(b2_full(input)?.tokens)
 }
 
 pub fn b3(input: Vec<u8>) -> Result<TokenStream2, String> {
-    // 高强度档主容器随 `alloc` 走堆（与 `s3` / `cs3` / `i3` / `fl3` 对齐）；
-    // 关闭 `alloc` 时 `allow_heap` 为假，仍纯栈，`no_std` 可用。
-    build_obfuscated_bytes(input, TIER_HIGH, cfg!(feature = "alloc"), false)
+    Ok(b3_full(input)?.tokens)
 }
 
 #[cfg(test)]

@@ -10,9 +10,10 @@ use crate::crypto::CRYPTOS;
 use crate::crypto::{Crypto, LayerCtx};
 use crate::storage::{STORAGES, Storage};
 use lib_unknown::crypto::core::inv_mul::inv_mul64;
-use lib_unknown::rand::core::{random, random_range, shuffle};
+use lib_unknown::rand::core::{random, random_bool, random_range, shuffle};
 use proc_macro2::{Ident as Ident2, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
+use std::ops::RangeInclusive;
 
 /// 纯栈内存预算上限（字节），控制主容器与 chunk 中间容器走栈 / 走堆的阈值。
 ///
@@ -41,10 +42,42 @@ pub(crate) const STACK_BUDGET: usize = if cfg!(feature = "budget-8m") {
     4 * 1024 // 默认值放在最后
 };
 
-/// 强度档位公共参数（延迟上限 / 组合安全度下限 / 原语叠加倍率 / 逐层非内联包装概率 / 短块预填充）。
-#[allow(unused)]
-#[derive(Clone, Copy)]
+/// 主容器（`is_main = true`）或 chunk 中间容器（`false`）的堆 / 栈统一判定。
+///
+/// `alloc` 关闭时超预算直接报错（纯栈模式，`no_std` 主路径）；开启时
+/// ≤16 B 恒栈、达到预算（主容器 `STACK_BUDGET` / 中间容器一半）恒堆，
+/// 其间按 `prefer_stack` 掷币。
+pub(crate) fn use_heap(size: usize, is_main: bool, prefer_stack: bool) -> Result<bool, String> {
+    let budget = STACK_BUDGET / if is_main { 1 } else { 2 };
+    if cfg!(feature = "alloc") {
+        if size <= 16 {
+            Ok(false)
+        } else {
+            if size >= budget {
+                Ok(true)
+            } else {
+                if random_bool(if prefer_stack { 0.76 } else { 0.4 }) {
+                    Ok(false)
+                } else {
+                    Ok(true)
+                }
+            }
+        }
+    } else {
+        if size >= budget {
+            Err(format!(
+                "容器需要 {size}B，超过栈预算 {budget}B（总上限 {STACK_BUDGET}B）且无堆可用"
+            ))
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+/// 强度档位公共参数（延迟上限 / 组合安全度下限 / 逐层非内联包装概率 / 短块预填充 / 堆栈偏好 / 反反汇编注入参数）。
+#[derive(Clone)]
 pub(crate) struct TierParams {
+    pub(crate) prefer_stack: bool,
     pub(crate) max_latency: u8,
     pub(crate) min_security: u8,
     /// 包装概率 0..=100（`build_dec_layers` 按层抛硬币）。
@@ -56,12 +89,13 @@ pub(crate) struct TierParams {
     pub(crate) pad_short: bool,
 
     pub(crate) anti_disasm_pct: u8,
-    pub(crate) anti_disasm_count_range: (u8, u8),
-    pub(crate) anti_disasm_garbage_range: (u8, u8),
+    pub(crate) anti_disasm_count_range: RangeInclusive<u8>,
+    pub(crate) anti_disasm_garbage_range: RangeInclusive<u8>,
 }
 
-/// 低延迟档（`s1` / `b1` / `i1` / `fl1` / `cs1`）：纯栈，`no_std` 可用。
+/// 低延迟档（`s1` / `b1` / `i1` / `fl1` / `cs1`）：栈偏好（`alloc` 下掷币 76% 栈），`no_std` 可用。
 pub(crate) const TIER_LOW: TierParams = TierParams {
+    prefer_stack: true,
     max_latency: 30,
     min_security: 7,
     wrap_pct: 8,
@@ -69,12 +103,13 @@ pub(crate) const TIER_LOW: TierParams = TierParams {
     cold_pct: 10,
     pad_short: false,
     anti_disasm_pct: 5,
-    anti_disasm_count_range: (1, 1),
-    anti_disasm_garbage_range: (1, 5),
+    anti_disasm_count_range: 1..=1,
+    anti_disasm_garbage_range: 1..=5,
 };
 
-/// 均衡档（`s2` / `b2` / `i2` / `fl2` / `cs2`）：堆栈随机。
+/// 均衡档（`s2` / `b2` / `i2` / `fl2` / `cs2`）：堆栈随机（`alloc` 下 >16B 载荷 60% 走堆）。
 pub(crate) const TIER_BALANCED: TierParams = TierParams {
+    prefer_stack: false,
     max_latency: 80,
     min_security: 63,
     wrap_pct: 50,
@@ -82,12 +117,13 @@ pub(crate) const TIER_BALANCED: TierParams = TierParams {
     cold_pct: 20,
     pad_short: true,
     anti_disasm_pct: 40,
-    anti_disasm_count_range: (1, 2),
-    anti_disasm_garbage_range: (4, 10),
+    anti_disasm_count_range: 1..=2,
+    anti_disasm_garbage_range: 4..=10,
 };
 
-/// 高强度档（`s3` / `b3` / `i3` / `fl3` / `cs3`）：`alloc` 下主容器走堆。
+/// 高强度档（`s3` / `b3` / `i3` / `fl3` / `cs3`）：`alloc` 下主容器堆偏好（60% 走堆，≤16B 恒栈）。
 pub(crate) const TIER_HIGH: TierParams = TierParams {
+    prefer_stack: false,
     max_latency: 100,
     min_security: 93,
     wrap_pct: 85,
@@ -95,8 +131,8 @@ pub(crate) const TIER_HIGH: TierParams = TierParams {
     cold_pct: 50,
     pad_short: true,
     anti_disasm_pct: 80,
-    anti_disasm_count_range: (2, 3),
-    anti_disasm_garbage_range: (8, 15),
+    anti_disasm_count_range: 2..=3,
+    anti_disasm_garbage_range: 8..=15,
 };
 
 fn available_crypto(chunk_size: usize, max_latency: u8) -> Vec<Crypto> {
@@ -184,7 +220,7 @@ fn apply_single_layer(
 /// `chunk_tag` 仅用于错误定位（如 `"chunk#3"` / `"junk#3"`）。
 fn encrypt_layers(
     data: Vec<u8>,
-    tier: TierParams,
+    tier: &TierParams,
     ghost_state: u64,
     chunk_tag: &str,
 ) -> Result<(Vec<u8>, Vec<LayerCtxRecord>), String> {
@@ -289,8 +325,8 @@ fn gen_anti_disasm_ast(tier: &TierParams) -> TokenStream2 {
         return TokenStream2::new();
     }
 
-    let count = random_range(tier.anti_disasm_count_range.0..=tier.anti_disasm_count_range.1);
-    let garbage = random_range(tier.anti_disasm_garbage_range.0..=tier.anti_disasm_garbage_range.1);
+    let count = random_range(tier.anti_disasm_count_range.clone());
+    let garbage = random_range(tier.anti_disasm_garbage_range.clone());
 
     quote! {
         ::obfstr2::anti_disassembly!(count = #count, garbage = #garbage);
@@ -637,13 +673,20 @@ fn fold_chunk_nodes(
     nodes
 }
 
-// `prefer_stack`：主容器优先走栈（仅在允许堆且载荷未触发 `STACK_BUDGET` 时生效）。
+/// 字节混淆编排的产物：展开 Token 流 + 主容器实际选择的堆 / 栈族。
+///
+/// `main_is_heap` 供 `cs2!` 等零拷贝消费主容器的外层包装复用：判定只在
+/// `build_obfuscated_bytes` 内做一次，外层容器族与内层主容器族严格一致，
+/// 避免两侧独立掷币导致 `from_inner_with_nul` 收到不匹配的容器类型。
+pub(crate) struct ObfuscatedBytes {
+    pub(crate) tokens: TokenStream2,
+    pub(crate) main_is_heap: bool,
+}
+
 pub(crate) fn build_obfuscated_bytes(
     mut input: Vec<u8>,
     tier: TierParams,
-    allow_heap: bool,
-    prefer_stack: bool,
-) -> Result<TokenStream2, String> {
+) -> Result<ObfuscatedBytes, String> {
     let size = input.len();
     let id: u64 = random();
     let ghost_init: u64 = random();
@@ -674,12 +717,17 @@ pub(crate) fn build_obfuscated_bytes(
     let bytes = format_ident!("__bytes_{id}");
     let ghost_state = format_ident!("__ghost_state_{id}");
 
-    let main_type_path = if allow_heap && (!prefer_stack || size >= STACK_BUDGET) {
+    let chunk_type_path = |peak: usize| -> Result<TokenStream2, String> {
+        if use_heap(peak, false, tier.prefer_stack)? {
+            Ok(quote!(::obfstr2::types::buffer::HeapBytes))
+        } else {
+            Ok(quote!(::obfstr2::types::buffer::StackBytes))
+        }
+    };
+
+    let main_is_heap = use_heap(size, true, tier.prefer_stack)?;
+    let main_type_path = if main_is_heap {
         quote!(::obfstr2::types::buffer::HeapBytes)
-    } else if size >= STACK_BUDGET && !allow_heap {
-        return Err(format!(
-            "主容器 需要 {size}B 超过纯栈上限 {STACK_BUDGET}B 且无堆可用"
-        ));
     } else {
         quote!(::obfstr2::types::buffer::StackBytes)
     };
@@ -701,7 +749,7 @@ pub(crate) fn build_obfuscated_bytes(
 
         // 加密选层（传入当前块入口处的 sim_ghost；垃圾块若在极端资源下无法加密则静默忽略）
         let (ciphertext, layers) =
-            match encrypt_layers(chunk_data, tier, sim_ghost, &format!("chunk#{seq}")) {
+            match encrypt_layers(chunk_data, &tier, sim_ghost, &format!("chunk#{seq}")) {
                 Ok(res) => res,
                 Err(e) => {
                     if is_junk {
@@ -721,27 +769,11 @@ pub(crate) fn build_obfuscated_bytes(
             .max(pt_len)
             .max(1);
 
-        let use_heap_chunk = if peak > STACK_BUDGET / 2 {
-            if allow_heap {
-                true
-            } else if is_junk {
-                continue;
-            } else {
-                return Err(format!(
-                    "chunk#{seq} 需要 {peak}B 中间容器，超过纯栈上限 {}B 且无堆可用",
-                    STACK_BUDGET / 2
-                ));
-            }
-        } else if peak <= 16 {
-            false
-        } else {
-            allow_heap && random::<bool>()
-        };
-
-        let chunk_type_path = if use_heap_chunk {
-            quote!(::obfstr2::types::buffer::HeapBytes)
-        } else {
-            quote!(::obfstr2::types::buffer::StackBytes)
+        let chunk_type_path = match chunk_type_path(peak) {
+            Ok(path) => path,
+            // 垃圾块超栈预算时静默跳过
+            Err(_) if is_junk => continue,
+            Err(e) => return Err(e),
         };
 
         let mut pool = available_storage(ct_len, tier.max_latency);
@@ -891,21 +923,24 @@ pub(crate) fn build_obfuscated_bytes(
     let anti_disasm1 = gen_anti_disasm_ast(&tier);
     let anti_disasm2 = gen_anti_disasm_ast(&tier);
 
-    Ok(quote! {
-        {
-            #chunk_prelude
-            #anti_disasm1
+    Ok(ObfuscatedBytes {
+        tokens: quote! {
+            {
+                #chunk_prelude
+                #anti_disasm1
 
-            let mut #raw_bytes = #main_ty::new();
-            let mut #ghost_state: u64 = #ghost_init;
-            #[allow(unused_variables)]
-            let #bytes: &mut #main_ty = &mut #raw_bytes;
-            #chunk_body
+                let mut #raw_bytes = #main_ty::new();
+                let mut #ghost_state: u64 = #ghost_init;
+                #[allow(unused_variables)]
+                let #bytes: &mut #main_ty = &mut #raw_bytes;
+                #chunk_body
 
-            #anti_disasm2
-            ::core::hint::black_box(#ghost_state);
-            #raw_bytes
-        }
+                #anti_disasm2
+                ::core::hint::black_box(#ghost_state);
+                #raw_bytes
+            }
+        },
+        main_is_heap,
     })
 }
 
@@ -1002,7 +1037,7 @@ mod tests {
         ];
 
         for case in &cases {
-            let tier = case.tier;
+            let tier = case.tier.clone();
             println!(
                 "\n{:=^100}",
                 format!(
@@ -1030,7 +1065,7 @@ mod tests {
                     if size > 0 {
                         fill_bytes(&mut data);
                     }
-                    match encrypt_layers(data, tier, random::<u64>(), "sim") {
+                    match encrypt_layers(data, &tier, random::<u64>(), "sim") {
                         Ok((_, layers)) => {
                             let pre_padded = tier.pad_short && size < 16;
                             let mut vuln = 1.0_f64;

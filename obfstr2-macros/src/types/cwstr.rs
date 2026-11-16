@@ -5,60 +5,50 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! 宽 C 字符串档位入口：`cw1` / `cw2` / `cw3`（低延迟 / 均衡 / 高强度）。
-//!
-//! 注册表见 `crate::crypto` / `crate::storage`，编排见 `crate::core`，
-//! 本文件只保留档位入口；UTF-16 公共还原见 `crate::utils`，解析见 `crate::parse`。
-//!
-//! 设计：字符串字面量经 `encode_utf16` 转为码元序列，编译期拒绝内部 NUL 后追加
-//! 唯一结尾 `0u16`，再按小端展开为 `Vec<u8>`（字节数为 `2 * N`）喂入
-//! `b1`/`b2`/`b3`；运行时解密为字节容器后经
-//! `Buffer::extend_from_zeroable_primitive_slice_le` 还原为 `StackU16<N>` / `HeapU16<N>`，
-//! 随后立即擦除并释放中转字节容器。`N` 含结尾 `0u16`（空串即 `N = 1`）；
-//! 返回自有容器（`Deref<Target = [u16]>`），`as_ptr()` 可直接用于 Win32 `PCWSTR`，
-//! `Drop` 自动清零。
-//!
-//! 编译期固定使用小端线格式、运行时用 `_le` 还原，保证 host/target 端序不同时语义不变。
 
-use super::{b1, b2, b3, want_heap};
+use super::{b1_full, b2_full, b3_full};
 use crate::parse::ParsedCWide;
 use crate::utils::{wide_to_le, wrap_wide};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
 pub(crate) fn cw1(parsed: ParsedCWide) -> Result<TokenStream2, String> {
-    // 纯栈、无堆（nostd 可用），与 b1/s1/cs1 同策略。
     let ParsedCWide { units } = parsed;
     let n = units.len();
-    let ts = b1(wide_to_le(&units))?;
-    Ok(wrap_wide(ts, n, quote!(::obfstr2::types::buffer::StackU16)))
+    let obf = b1_full(wide_to_le(&units))?;
+    let main_type_path = if obf.main_is_heap {
+        quote!(::obfstr2::types::buffer::HeapU16)
+    } else {
+        quote!(::obfstr2::types::buffer::StackU16)
+    };
+    Ok(wrap_wide(obf.tokens, n, main_type_path))
 }
 
 pub(crate) fn cw2(parsed: ParsedCWide) -> Result<TokenStream2, String> {
     let ParsedCWide { units } = parsed;
     let n = units.len();
-    let ts = b2(wide_to_le(&units))?;
-
-    let main_type_path = if want_heap() {
+    // 外层容器族跟随 b2_full 的单次判定，与内层主容器族保持一致。
+    let obf = b2_full(wide_to_le(&units))?;
+    let main_type_path = if obf.main_is_heap {
         quote!(::obfstr2::types::buffer::HeapU16)
     } else {
         quote!(::obfstr2::types::buffer::StackU16)
     };
 
-    Ok(wrap_wide(ts, n, main_type_path))
+    Ok(wrap_wide(obf.tokens, n, main_type_path))
 }
 
 pub(crate) fn cw3(parsed: ParsedCWide) -> Result<TokenStream2, String> {
     let ParsedCWide { units } = parsed;
     let n = units.len();
-    let ts = b3(wide_to_le(&units))?;
-
-    let main_type_path = if cfg!(feature = "alloc") {
+    let obf = b3_full(wide_to_le(&units))?;
+    let main_type_path = if obf.main_is_heap {
         quote!(::obfstr2::types::buffer::HeapU16)
     } else {
         quote!(::obfstr2::types::buffer::StackU16)
     };
 
-    Ok(wrap_wide(ts, n, main_type_path))
+    Ok(wrap_wide(obf.tokens, n, main_type_path))
 }
 
 #[cfg(test)]
