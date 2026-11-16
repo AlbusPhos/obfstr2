@@ -10,6 +10,11 @@
 
 ---
 
+## [0.4.3] - 2026-11-16
+
+### Changed
+- 文档：README / README_en 修复数学公式渲染——行内公式与 `\text{}` 内下划线补空格 / 双重转义，避免 `_` 被 Markdown 解析为斜体；`$O(\log M)$` 与 `$\text{min\_security}$` 分别改为纯文本与行内代码；README_en 基准对比、Trade-offs、Use Cases、宏一览、特性表、基准数据六张表格统一对齐排版，i18n 锚点同步刷新
+
 ## [0.4.2] - 2026-11-16
 
 ### Changed
@@ -108,7 +113,8 @@
 - 引入现代对称密码学设计要素（SPN、动态 S 盒 / P 盒、ARX、雪崩效应）以对抗 `angr` 等符号执行工具
 - 字符串 / 字节 / CStr 容器在离开作用域时执行 Volatile 擦除
 
-[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/AlbusPhos/obfstr2/compare/v0.3.3...v0.4.0
