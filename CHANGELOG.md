@@ -10,6 +10,13 @@
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- 测试：`tests/user.rs` 将 `anti_disasm_*` 字段覆盖从 `override_all_field_types_and_trailing_comma` 拆分至独立的 `#[cfg(feature = "anti-disassembly")]` 测试，修复默认特性下 `cargo test -p obfstr2-macros` 因特性门控拒绝显式配置而误报失败的问题
+
+---
+
 ## [0.5.0] - 2026-11-17
 
 ### Added

@@ -41,7 +41,9 @@ fn empty_braces_equal_tier_balanced() {
 
 #[test]
 fn override_all_field_types_and_trailing_comma() {
-    // `:` 与 `=` 混用、配置块与载荷尾随逗号均允许
+    // `:` 与 `=` 混用、配置块与载荷尾随逗号均允许。
+    // `anti_disasm_*` 字段依赖 `anti-disassembly` 特性（未启用时编译期拒绝），
+    // 单独拆分至 `override_anti_disasm_fields_and_trailing_comma`。
     let (bytes, tier) = parse_bytes_user(quote!(
         {
             prefer_stack: true,
@@ -51,9 +53,6 @@ fn override_all_field_types_and_trailing_comma() {
             junk_pct: 10,
             cold_pct: 5,
             pad_short: false,
-            anti_disasm_pct: 60,
-            anti_disasm_count_range: 2..=4,
-            anti_disasm_garbage_range = 6..=12,
         },
         [0x41, 0x42, 0x43],
     ))
@@ -67,6 +66,23 @@ fn override_all_field_types_and_trailing_comma() {
     assert_eq!(tier.wrap_pct, 25);
     assert_eq!(tier.junk_pct, 10);
     assert_eq!(tier.cold_pct, 5);
+}
+
+/// 反反汇编字段覆盖：`parse_tier_overrides` 在未启用 `anti-disassembly` 特性时
+/// 会拒绝显式配置（防静默 no-op 误解），故本测试仅在启用该特性时编译参与。
+#[cfg(feature = "anti-disassembly")]
+#[test]
+fn override_anti_disasm_fields_and_trailing_comma() {
+    let (_, tier) = parse_bytes_user(quote!(
+        {
+            anti_disasm_pct: 60,
+            anti_disasm_count_range: 2..=4,
+            anti_disasm_garbage_range = 6..=12,
+        },
+        [0x41, 0x42, 0x43],
+    ))
+    .expect("anti-disasm override with trailing commas");
+
     assert_eq!(tier.anti_disasm_pct, 60);
     assert_eq!(tier.anti_disasm_count_range, 2..=4);
     assert_eq!(tier.anti_disasm_garbage_range, 6..=12);
