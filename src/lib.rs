@@ -13,6 +13,8 @@ pub use lib_unknown::crypto;
 pub use lib_unknown::encoding;
 /// 重导出统一错误类型，便于下游处理容器与解码错误。
 pub use lib_unknown::errors;
+/// 重导出 `lib_unknown::hash`，供动态密钥宏在展开代码中派生 `ghost_state` 绑定。
+pub use lib_unknown::hash;
 /// 重导出 `lib_unknown::types`，提供 `StackStr` / `HeapBytes` 等运行时容器类型。
 pub use lib_unknown::types;
 
@@ -834,5 +836,440 @@ macro_rules! w_user {
 macro_rules! cw_user {
     ($($tt:tt)*) => {
         ::obfstr2::obfstr2_macros::cw_user!($($tt)*)
+    };
+}
+
+// ── `*_key` / `*_key_user` 动态密钥档 ──────────────────────────────────────
+
+/// 字符串混淆宏（动态密钥档）。
+///
+/// 语法：`s_key!({ build_key: <编译期密钥>, run_key: <运行期表达式> }, "...")`。
+///
+/// - `build_key` 只参与编译期加密，不会以明文形式写入产物；支持 `"..."`、
+///   `b"..."`、`[0x12, 0x34, ...]` 与 `env!("VAR")`（编译期读取环境变量并注册
+///   Cargo 环境依赖）。
+/// - `run_key` 必须是运行期可得、类型为 `&[u8]` 的表达式（如 `key.as_bytes()`、`&buf[..]`
+///   或 `&vec`）。字面量与编译期常量形式会被拒绝，以避免密钥重新硬编码进二进制。
+/// - 运行期 `run_key` 必须与 `build_key` 逐字节一致；不一致时输出未定义（可能触发
+///   解密链的完整性擦除），这是针对模拟 / 符号 / 切片执行的对抗设计。请使用高熵
+///   随机密钥，不要使用口令。
+///
+/// 展开类型规则同 [`s2`](s2!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::s_key;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let s = s_key!({ build_key: "obfstr2-demo-key", run_key: key.as_bytes() }, "hello");
+/// assert_eq!(&*s, "hello");
+/// ```
+#[macro_export]
+macro_rules! s_key {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::s_key!($($tt)*)
+    };
+}
+
+/// 字节串混淆宏（动态密钥档）。
+///
+/// 语法：`b_key!({ build_key, run_key }, b"..." | [0x41, ...])`；
+/// 密钥规则见 [`s_key`](s_key!())，展开类型规则同 [`b2`](b2!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::b_key;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let b = b_key!({ build_key: "obfstr2-demo-key", run_key: key.as_bytes() }, b"abc");
+/// assert_eq!(&*b, b"abc");
+/// ```
+#[macro_export]
+macro_rules! b_key {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::b_key!($($tt)*)
+    };
+}
+
+/// 文件混淆宏（动态密钥档）。
+///
+/// 语法：`f_key!({ build_key, run_key }, "path")`；路径相对于被编译 crate 的
+/// `CARGO_MANIFEST_DIR` 解析。密钥规则见 [`s_key`](s_key!())，展开类型规则同
+/// [`f2`](f2!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::f_key;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let b = f_key!({ build_key: "obfstr2-demo-key", run_key: key.as_bytes() }, "assets/fixture.bin");
+/// assert_eq!(&*b, b"secret");
+/// ```
+#[macro_export]
+macro_rules! f_key {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::f_key!($($tt)*)
+    };
+}
+
+/// 格式化字符串混淆宏（动态密钥档）。
+///
+/// 语法：`s_fmt_key!({ build_key, run_key }, "fmt {}", args...)`；格式串中的
+/// 字面量片段逐个以动态密钥档混淆后注入 `format!`。返回 `String`，需要 `alloc`。
+/// 注意：每个字面量片段都会独立求值一次 `run_key` 表达式。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::s_fmt_key;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let name = "world";
+/// let s = s_fmt_key!(
+///     { build_key: "obfstr2-demo-key", run_key: key.as_bytes() },
+///     "hello, {}!",
+///     name
+/// );
+/// assert_eq!(s, "hello, world!");
+/// ```
+#[macro_export]
+macro_rules! s_fmt_key {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::s_fmt_key!($($tt)*)
+    };
+}
+
+/// 整数混淆宏（动态密钥档）。
+///
+/// 语法：`i_key!({ build_key, run_key }, <int_lit>)`；展开类型规则同
+/// [`i2`](i2!())，返回裸值，无 `Drop` 自动清零。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::i_key;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// assert_eq!(i_key!({ build_key: "obfstr2-demo-key", run_key: key.as_bytes() }, 42u8), 42u8);
+/// ```
+#[macro_export]
+macro_rules! i_key {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::i_key!($($tt)*)
+    };
+}
+
+/// 浮点混淆宏（动态密钥档）。
+///
+/// 语法：`fl_key!({ build_key, run_key }, <float_lit>)`；展开类型规则同
+/// [`fl2`](fl2!())，返回裸值，无 `Drop` 自动清零。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::fl_key;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let v = fl_key!({ build_key: "obfstr2-demo-key", run_key: key.as_bytes() }, 1.5f32);
+/// assert_eq!(v.to_bits(), 1.5f32.to_bits());
+/// ```
+#[macro_export]
+macro_rules! fl_key {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::fl_key!($($tt)*)
+    };
+}
+
+/// C 字符串混淆宏（动态密钥档）。
+///
+/// 语法：`cs_key!({ build_key, run_key }, "..." | c"..." | b"...")`；展开类型规则
+/// 同 [`cs2`](cs2!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::cs_key;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let c = cs_key!({ build_key: "obfstr2-demo-key", run_key: key.as_bytes() }, c"/bin/sh");
+/// assert_eq!(c.to_str().ok(), Some("/bin/sh"));
+/// ```
+#[macro_export]
+macro_rules! cs_key {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::cs_key!($($tt)*)
+    };
+}
+
+/// 宽字符串混淆宏（动态密钥档）。
+///
+/// 语法：`w_key!({ build_key, run_key }, "...")`；输入与展开规则同
+/// [`w2`](w2!())。密钥规则见 [`s_key`](s_key!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::w_key;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let ws = w_key!({ build_key: "obfstr2-demo-key", run_key: key.as_bytes() }, "a\0b");
+/// assert_eq!(&*ws, &[0x61u16, 0, 0x62][..]);
+/// ```
+#[macro_export]
+macro_rules! w_key {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::w_key!($($tt)*)
+    };
+}
+
+/// 宽 C 字符串混淆宏（动态密钥档）。
+///
+/// 语法：`cw_key!({ build_key, run_key }, "...")`；输入与展开规则同
+/// [`cw2`](cw2!())。密钥规则见 [`s_key`](s_key!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::cw_key;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let w = cw_key!({ build_key: "obfstr2-demo-key", run_key: key.as_bytes() }, "kernel32.dll");
+/// assert_eq!(&w[..w.len() - 1], "kernel32.dll".encode_utf16().collect::<Vec<_>>().as_slice());
+/// assert_eq!(w[w.len() - 1], 0);
+/// ```
+#[macro_export]
+macro_rules! cw_key {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::cw_key!($($tt)*)
+    };
+}
+
+/// 字符串混淆宏（动态密钥 + 自定义档）。
+///
+/// 语法：`s_key_user!({ build_key, run_key }, { key: val, ... }, "...")`。
+/// 配置块以均衡档为基底，配置键见 [`s_user`](s_user!())；密钥规则见
+/// [`s_key`](s_key!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::s_key_user;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let s = s_key_user!(
+///     { build_key: "obfstr2-demo-key", run_key: key.as_bytes() },
+///     { max_latency: 50 },
+///     "hello"
+/// );
+/// assert_eq!(&*s, "hello");
+/// ```
+#[macro_export]
+macro_rules! s_key_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::s_key_user!($($tt)*)
+    };
+}
+
+/// 字节串混淆宏（动态密钥 + 自定义档）。
+///
+/// 语法：`b_key_user!({ build_key, run_key }, { key: val, ... }, b"..." | [...])`；
+/// 配置键见 [`s_user`](s_user!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::b_key_user;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let b = b_key_user!(
+///     { build_key: "obfstr2-demo-key", run_key: key.as_bytes() },
+///     { prefer_stack: true },
+///     b"abc"
+/// );
+/// assert_eq!(&*b, b"abc");
+/// ```
+#[macro_export]
+macro_rules! b_key_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::b_key_user!($($tt)*)
+    };
+}
+
+/// 文件混淆宏（动态密钥 + 自定义档）。
+///
+/// 语法：`f_key_user!({ build_key, run_key }, { key: val, ... }, "path")`；
+/// 配置键见 [`s_user`](s_user!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::f_key_user;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let b = f_key_user!(
+///     { build_key: "obfstr2-demo-key", run_key: key.as_bytes() },
+///     { prefer_stack: true },
+///     "assets/fixture.bin"
+/// );
+/// assert_eq!(&*b, b"secret");
+/// ```
+#[macro_export]
+macro_rules! f_key_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::f_key_user!($($tt)*)
+    };
+}
+
+/// 格式化字符串混淆宏（动态密钥 + 自定义档）。
+///
+/// 语法：`s_fmt_key_user!({ build_key, run_key }, { key: val, ... }, "fmt {}", args...)`。
+/// 配置键见 [`s_user`](s_user!())；每个字面量片段独立求值 `run_key`。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::s_fmt_key_user;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let name = "world";
+/// let s = s_fmt_key_user!(
+///     { build_key: "obfstr2-demo-key", run_key: key.as_bytes() },
+///     { max_latency: 50 },
+///     "hello, {}!",
+///     name
+/// );
+/// assert_eq!(s, "hello, world!");
+/// ```
+#[macro_export]
+macro_rules! s_fmt_key_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::s_fmt_key_user!($($tt)*)
+    };
+}
+
+/// 整数混淆宏（动态密钥 + 自定义档）。
+///
+/// 语法：`i_key_user!({ build_key, run_key }, { key: val, ... }, <int_lit>)`；
+/// 配置键见 [`s_user`](s_user!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::i_key_user;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// assert_eq!(
+///     i_key_user!({ build_key: "obfstr2-demo-key", run_key: key.as_bytes() }, { max_latency: 50 }, 42u8),
+///     42u8
+/// );
+/// ```
+#[macro_export]
+macro_rules! i_key_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::i_key_user!($($tt)*)
+    };
+}
+
+/// 浮点混淆宏（动态密钥 + 自定义档）。
+///
+/// 语法：`fl_key_user!({ build_key, run_key }, { key: val, ... }, <float_lit>)`；
+/// 配置键见 [`s_user`](s_user!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::fl_key_user;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let v = fl_key_user!(
+///     { build_key: "obfstr2-demo-key", run_key: key.as_bytes() },
+///     { max_latency: 50 },
+///     1.5f32
+/// );
+/// assert_eq!(v.to_bits(), 1.5f32.to_bits());
+/// ```
+#[macro_export]
+macro_rules! fl_key_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::fl_key_user!($($tt)*)
+    };
+}
+
+/// C 字符串混淆宏（动态密钥 + 自定义档）。
+///
+/// 语法：`cs_key_user!({ build_key, run_key }, { key: val, ... }, "..." | c"..." | b"...")`；
+/// 配置键见 [`s_user`](s_user!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::cs_key_user;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let c = cs_key_user!(
+///     { build_key: "obfstr2-demo-key", run_key: key.as_bytes() },
+///     { prefer_stack: true },
+///     c"/bin/sh"
+/// );
+/// assert_eq!(c.to_str().ok(), Some("/bin/sh"));
+/// ```
+#[macro_export]
+macro_rules! cs_key_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::cs_key_user!($($tt)*)
+    };
+}
+
+/// 宽字符串混淆宏（动态密钥 + 自定义档）。
+///
+/// 语法：`w_key_user!({ build_key, run_key }, { key: val, ... }, "...")`；
+/// 配置键见 [`s_user`](s_user!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::w_key_user;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let ws = w_key_user!(
+///     { build_key: "obfstr2-demo-key", run_key: key.as_bytes() },
+///     { prefer_stack: true },
+///     "a\0b"
+/// );
+/// assert_eq!(&*ws, &[0x61u16, 0, 0x62][..]);
+/// ```
+#[macro_export]
+macro_rules! w_key_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::w_key_user!($($tt)*)
+    };
+}
+
+/// 宽 C 字符串混淆宏（动态密钥 + 自定义档）。
+///
+/// 语法：`cw_key_user!({ build_key, run_key }, { key: val, ... }, "...")`；
+/// 配置键见 [`s_user`](s_user!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::cw_key_user;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let w = cw_key_user!(
+///     { build_key: "obfstr2-demo-key", run_key: key.as_bytes() },
+///     { min_security: 70 },
+///     "kernel32.dll"
+/// );
+/// assert_eq!(&w[..w.len() - 1], "kernel32.dll".encode_utf16().collect::<Vec<_>>().as_slice());
+/// assert_eq!(w[w.len() - 1], 0);
+/// ```
+#[macro_export]
+macro_rules! cw_key_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::cw_key_user!($($tt)*)
     };
 }

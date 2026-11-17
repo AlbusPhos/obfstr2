@@ -6,18 +6,22 @@
 
 //! 宽字符串档位入口：`w1` / `w2` / `w3`（低延迟 / 均衡 / 高强度）与 `w_user`（自定义档）。
 
-use super::b_full;
+use super::b_full_keyed;
 use crate::core::{TIER_BALANCED, TIER_HIGH, TIER_LOW, TierParams};
-use crate::parse::ParsedWide;
+use crate::parse::{KeyPair, ParsedWide};
 use crate::utils::{wide_to_le, wrap_wide};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
-fn w_impl(parsed: ParsedWide, tier: TierParams) -> Result<TokenStream2, String> {
+fn w_impl(
+    parsed: ParsedWide,
+    tier: TierParams,
+    keys: Option<KeyPair>,
+) -> Result<TokenStream2, String> {
     let ParsedWide { units } = parsed;
     let n = units.len();
     // 外层容器族跟随 b_full 的单次判定，与内层主容器族保持一致。
-    let obf = b_full(wide_to_le(&units), tier)?;
+    let obf = b_full_keyed(wide_to_le(&units), tier, keys)?;
     let main_type_path = if obf.main_is_heap {
         quote!(::obfstr2::types::buffer::HeapU16)
     } else {
@@ -27,18 +31,32 @@ fn w_impl(parsed: ParsedWide, tier: TierParams) -> Result<TokenStream2, String> 
 }
 
 pub(crate) fn w1(parsed: ParsedWide) -> Result<TokenStream2, String> {
-    w_impl(parsed, TIER_LOW)
+    w_impl(parsed, TIER_LOW, None)
 }
 
 pub(crate) fn w2(parsed: ParsedWide) -> Result<TokenStream2, String> {
-    w_impl(parsed, TIER_BALANCED)
+    w_impl(parsed, TIER_BALANCED, None)
 }
 
 pub(crate) fn w3(parsed: ParsedWide) -> Result<TokenStream2, String> {
-    w_impl(parsed, TIER_HIGH)
+    w_impl(parsed, TIER_HIGH, None)
 }
 
 /// 自定义档：以调用方给定的 `TierParams` 混淆宽字符串载荷。
 pub(crate) fn w_user(parsed: ParsedWide, tier: TierParams) -> Result<TokenStream2, String> {
-    w_impl(parsed, tier)
+    w_impl(parsed, tier, None)
+}
+
+/// 动态密钥档（均衡档基底）：编译期 `build_key` 加密，运行期 `run_key` 解密。
+pub(crate) fn w_key(parsed: ParsedWide, keys: KeyPair) -> Result<TokenStream2, String> {
+    w_impl(parsed, TIER_BALANCED, Some(keys))
+}
+
+/// 动态密钥 + 自定义档：以调用方给定的 `TierParams` 混淆宽字符串载荷。
+pub(crate) fn w_key_user(
+    parsed: ParsedWide,
+    keys: KeyPair,
+    tier: TierParams,
+) -> Result<TokenStream2, String> {
+    w_impl(parsed, tier, Some(keys))
 }

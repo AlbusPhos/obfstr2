@@ -7,7 +7,7 @@
 //! 整数档位入口：`i1` / `i2` / `i3`（低延迟 / 均衡 / 高强度）。
 
 use crate::core::{TIER_BALANCED, TIER_HIGH, TIER_LOW, TierParams, build_obfuscated_bytes};
-use crate::parse::{IntTy, ParsedInt};
+use crate::parse::{IntTy, KeyPair, ParsedInt};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
@@ -54,24 +54,42 @@ fn build_int(parsed: ParsedInt, inner: TokenStream2) -> TokenStream2 {
     }
 }
 
-pub fn i_impl(parsed: ParsedInt, tier: TierParams) -> Result<TokenStream2, String> {
-    let inner = build_obfuscated_bytes(parsed.bytes.clone(), tier)?.tokens;
+pub fn i_impl(
+    parsed: ParsedInt,
+    tier: TierParams,
+    keys: Option<KeyPair>,
+) -> Result<TokenStream2, String> {
+    let inner = build_obfuscated_bytes(parsed.bytes.clone(), tier, keys)?.tokens;
     Ok(build_int(parsed, inner))
 }
 
 pub fn i1(parsed: ParsedInt) -> Result<TokenStream2, String> {
-    i_impl(parsed, TIER_LOW)
+    i_impl(parsed, TIER_LOW, None)
 }
 
 pub fn i2(parsed: ParsedInt) -> Result<TokenStream2, String> {
-    i_impl(parsed, TIER_BALANCED)
+    i_impl(parsed, TIER_BALANCED, None)
 }
 
 pub fn i3(parsed: ParsedInt) -> Result<TokenStream2, String> {
-    i_impl(parsed, TIER_HIGH)
+    i_impl(parsed, TIER_HIGH, None)
 }
 
 /// 自定义档：以调用方给定的 `TierParams` 混淆整数载荷。
 pub fn i_user(parsed: ParsedInt, tier: TierParams) -> Result<TokenStream2, String> {
-    i_impl(parsed, tier)
+    i_impl(parsed, tier, None)
+}
+
+/// 动态密钥档（均衡档基底）：编译期 `build_key` 加密，运行期 `run_key` 解密。
+pub fn i_key(parsed: ParsedInt, keys: KeyPair) -> Result<TokenStream2, String> {
+    i_impl(parsed, TIER_BALANCED, Some(keys))
+}
+
+/// 动态密钥 + 自定义档：以调用方给定的 `TierParams` 混淆整数载荷。
+pub fn i_key_user(
+    parsed: ParsedInt,
+    keys: KeyPair,
+    tier: TierParams,
+) -> Result<TokenStream2, String> {
+    i_impl(parsed, tier, Some(keys))
 }

@@ -8,8 +8,10 @@
 
 use crate::crypto::CRYPTOS;
 use crate::crypto::{Crypto, LayerCtx};
+use crate::parse::KeyPair;
 use crate::storage::{STORAGES, Storage};
 use lib_unknown::crypto::core::inv_mul::inv_mul64;
+use lib_unknown::hash::LightHasher;
 use lib_unknown::rand::core::{random, random_bool, random_range, shuffle};
 use proc_macro2::{Ident as Ident2, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
@@ -345,9 +347,17 @@ pub(crate) fn effective_wrap_pct(base: u8, inline_count: u32) -> u8 {
 }
 
 /// 为整个 chunk 的初始 8 字节密钥生成随机 Storage 存储与运行时解码/即时擦除 AST。
+/// 编译期以 `sim_ghost` 异或掩码，运行期结合 `#ghost_ident` 还原，确保单层块也强依赖 `ghost_state`。
 /// 返回语句定义 `let mut #key_ident: u64 = { ... };`。
-fn gen_key_storage(key: u64, key_ident: &Ident2, tag: &str, max_latency: u8) -> TokenStream2 {
-    let key_bytes = key.to_le_bytes();
+fn gen_key_storage(
+    key: u64,
+    sim_ghost: u64,
+    ghost_ident: &Ident2,
+    key_ident: &Ident2,
+    tag: &str,
+    max_latency: u8,
+) -> TokenStream2 {
+    let key_bytes = (key ^ sim_ghost).to_le_bytes();
     // 8 字节天然支持 mac, uuid, ipv6, bytes
     let mut pool = available_storage(8, max_latency);
     let storage = pool.pop().unwrap_or_else(|| {
@@ -367,6 +377,7 @@ fn gen_key_storage(key: u64, key_ident: &Ident2, tag: &str, max_latency: u8) -> 
         let mut #key_ident: u64 = {
             #storage_ast
             u64::from_le_bytes(unsafe { #key_buf_ident.as_slice().try_into().unwrap_unchecked() })
+                ^ ::core::hint::black_box(#ghost_ident)
         };
     }
 }
@@ -390,7 +401,7 @@ fn gen_anti_disasm_ast(tier: &TierParams) -> TokenStream2 {
 }
 
 /// 逆序解密 fold：`(AST, Ident_out) = dec(ctx, Ident_in)` 串联。
-/// 每个 chunk 仅声明一个初始密钥，每层解密后混入 `ghost_ident` 并通过
+/// 每个 chunk 仅声明一个初始密钥（经 `ghost_ident` 解掩码），每层解密后混入 `ghost_ident` 并通过
 /// `.wrapping_add(ghost_state).wrapping_mul((last_dec as u64) | 1)` 推进。
 #[allow(clippy::too_many_arguments)]
 fn build_dec_layers(
@@ -398,6 +409,7 @@ fn build_dec_layers(
     family: &TokenStream2,
     entry: Ident2,
     ghost_ident: &Ident2,
+    sim_ghost: u64,
     tag_prefix: &str,
     tier: &TierParams,
 ) -> (TokenStream2, TokenStream2, Ident2) {
@@ -414,6 +426,8 @@ fn build_dec_layers(
     let key_ident = format_ident!("__key_{tag_prefix}");
     body.extend(gen_key_storage(
         entry_layer.key,
+        sim_ghost,
+        ghost_ident,
         &key_ident,
         tag_prefix,
         tier.max_latency,
@@ -583,47 +597,136 @@ fn build_dec_layers(
     (prelude, body, cur)
 }
 
-/// 生成兼具真实感且不可折叠的“完整性校验”数学不透明谓词。
-fn gen_integrity_check(is_junk: bool, final_ident: &Ident2) -> TokenStream2 {
-    let seed: u64 = random();
+/// 生成数学不透明谓词。
+fn gen_integrity_check(
+    is_junk: bool,
+    final_ident: &Ident2,
+    ghost_ident: &Ident2,
+    sim_ghost: u64,
+) -> TokenStream2 {
+    let seed: u64 = random::<u64>() | 1; // 保证为奇数，在 Z_{2^64} 上可逆
+    let c_lhs: u64 = random();
+    let diff: u64 = random::<u64>() | 1; // 非零奇数偏移，用于构造精确不等式
+    let use_eq: bool = random();
+
+    // 当 (is_junk && use_eq) 或 (!is_junk && !use_eq) 时，运行期两侧应相等
+    let should_equal = is_junk == use_eq;
+    let cmp_op = if use_eq { quote!(==) } else { quote!(!=) };
+
     let mode = random_range(0..4_u8);
     match mode {
+        // Mode 0: 非线性 MBA 恒等式 + Z_{2^64} 乘法逆元对偶 (inv_mul64)
+        // 恒等式: ((x ^ y) + 2*(x & y)) * k * k^{-1} == (x | y) + (x & y)
         0 => {
-            let comp = if is_junk { quote!(!= 2) } else { quote!(== 2) };
-            quote! {
-                let _chk_val = ::core::hint::black_box(#seed as u64);
-                if ::core::hint::black_box((_chk_val.wrapping_mul(_chk_val) & 3) #comp) {
-                    #final_ident.wipe_data();
-                }
-            }
-        }
-        1 => {
-            let comp = if is_junk { quote!(== 1) } else { quote!(== 0) };
-            quote! {
-                let _chk_val = ::core::hint::black_box(#seed as u64);
-                if ::core::hint::black_box(((_chk_val | 1) & 1) #comp) {
-                    #final_ident.wipe_data();
-                }
-            }
-        }
-        2 => {
-            let comp = if is_junk { quote!(== 0) } else { quote!(== 1) };
-            quote! {
-                let _chk_val = ::core::hint::black_box(#seed as u64);
-                if ::core::hint::black_box((_chk_val.wrapping_mul(2) & 1) #comp) {
-                    #final_ident.wipe_data();
-                }
-            }
-        }
-        _ => {
-            let comp = if is_junk {
-                quote!(!= _chk_val)
+            let rot = random_range(5..59_u32);
+            let k_inv = inv_mul64(seed);
+            let ct_ctx = sim_ghost.rotate_left(rot).wrapping_mul(seed);
+            let c_rhs = if should_equal {
+                ct_ctx.wrapping_add(c_lhs)
             } else {
-                quote!(== _chk_val)
+                ct_ctx.wrapping_add(c_lhs).wrapping_add(diff)
             };
+
             quote! {
-                let _chk_val = ::core::hint::black_box(#seed as u64);
-                if ::core::hint::black_box(_chk_val.wrapping_add(1) #comp) {
+                let _x = ::core::hint::black_box(#ghost_ident) ^ #c_lhs;
+                let _y = (#final_ident.as_slice().as_ptr() as usize) as u64;
+                let _a = (_x ^ _y)
+                    .wrapping_add((_x & _y).wrapping_shl(1))
+                    .wrapping_mul(#seed);
+                let _b = (_x | _y).wrapping_add(_x & _y);
+                let _ctx = ::core::hint::black_box(#ghost_ident)
+                    .rotate_left(#rot)
+                    .wrapping_mul(#seed);
+                let _lhs = _a.wrapping_mul(#k_inv).wrapping_add(_ctx).wrapping_add(#c_lhs);
+                let _rhs = _b.wrapping_add(#c_rhs);
+                if ::core::hint::black_box(_lhs #cmp_op _rhs) {
+                    #final_ident.wipe_data();
+                }
+            }
+        }
+
+        // Mode 1: 汉明重量容斥原理 (popcnt / count_ones) + 正交位拆分 (SMT 求解器毒药)
+        // 恒等式 1: popcnt(x | y) + popcnt(x & y) == popcnt(x) + popcnt(y)
+        // 恒等式 2: ((x & !y) + (x & y)) ^ seed == x ^ seed == ghost_ident
+        1 => {
+            let ct_x = sim_ghost ^ seed;
+            let ct_ctx = (ct_x.count_ones() as u64)
+                .wrapping_mul(seed)
+                .wrapping_add(sim_ghost);
+            let c_rhs = if should_equal {
+                ct_ctx.wrapping_add(c_lhs)
+            } else {
+                ct_ctx.wrapping_add(c_lhs).wrapping_add(diff)
+            };
+            let odd_c = c_lhs | 1;
+
+            quote! {
+                let _x = ::core::hint::black_box(#ghost_ident) ^ #seed;
+                let _y = ((#final_ident.as_slice().as_ptr() as usize) as u64).wrapping_mul(#seed);
+                let _pop_a = ((_x | _y).count_ones().wrapping_add((_x & _y).count_ones())) as u64;
+                let _pop_b = (_x.count_ones().wrapping_add(_y.count_ones())) as u64;
+                let _re_ghost = (_x & !_y).wrapping_add(_x & _y) ^ #seed;
+                let _ctx = (_x.count_ones() as u64)
+                    .wrapping_mul(#seed)
+                    .wrapping_add(_re_ghost);
+                let _lhs = _pop_a.wrapping_mul(#odd_c).wrapping_add(_ctx).wrapping_add(#c_lhs);
+                let _rhs = _pop_b.wrapping_mul(#odd_c).wrapping_add(#c_rhs);
+                if ::core::hint::black_box(_lhs #cmp_op _rhs) {
+                    #final_ident.wipe_data();
+                }
+            }
+        }
+
+        // Mode 2: 2-adic 环 Hensel 奇数幂不动点 + 异或奇偶校验 (Parity)
+        // 性质 1: 任意奇数 v，v^2 mod 8 == 1（故 v^2 & !7 == v^2 - 1），且 v^4 mod 16 == 1
+        // 性质 2: (popcnt(x ^ y) ^ popcnt(x) ^ popcnt(y)) & 1 == 0
+        2 => {
+            let ct_ctx = (sim_ghost.wrapping_mul(seed) ^ 1).wrapping_add(c_lhs);
+            let c_rhs = if should_equal {
+                ct_ctx
+            } else {
+                ct_ctx.wrapping_add(diff)
+            };
+
+            quote! {
+                let _x = ::core::hint::black_box(#ghost_ident);
+                let _y = (#final_ident.as_slice().as_ptr() as usize) as u64;
+                let _odd = (_x ^ _y ^ #seed) | 1;
+                let _sq = _odd.wrapping_mul(_odd);
+                let _parity = (((_x ^ _y).count_ones()
+                    ^ _x.count_ones()
+                    ^ _y.count_ones()) & 1) as u64;
+                let _unit = (_sq.wrapping_mul(_sq) & 15) ^ _parity;
+                let _lhs = (_x.wrapping_mul(#seed) ^ _unit)
+                    .wrapping_add(_sq & !7u64)
+                    .wrapping_add(#c_lhs);
+                let _rhs = _sq.wrapping_sub(1).wrapping_add(#c_rhs);
+                if ::core::hint::black_box(_lhs #cmp_op _rhs) {
+                    #final_ident.wipe_data();
+                }
+            }
+        }
+
+        // Mode 3: 德摩根对称差重组的双侧 MBA + 棘轮线性同余校验
+        // 恒等式: (x | y) + (x & y) == ((x | y) ^ (x & y)) + 2*(x & y)
+        _ => {
+            let k_inv = inv_mul64(seed);
+            let ct_ctx = sim_ghost.wrapping_add(c_lhs).wrapping_mul(seed);
+            let c_rhs = if should_equal {
+                ct_ctx
+            } else {
+                ct_ctx.wrapping_add(diff)
+            };
+
+            quote! {
+                let _x = ::core::hint::black_box(#ghost_ident);
+                let _y = ((#final_ident.as_slice().as_ptr() as usize) as u64) ^ #seed;
+                let _mba_a = (_x | _y).wrapping_add(_x & _y);
+                let _mba_b = ((_x | _y) ^ (_x & _y)).wrapping_add((_x & _y).wrapping_shl(1));
+                let _ctx = _x.wrapping_add(#c_lhs).wrapping_mul(#seed);
+                let _lhs = (_mba_a ^ #k_inv).wrapping_add(_ctx);
+                let _rhs = (_mba_b ^ #k_inv).wrapping_add(#c_rhs);
+                if ::core::hint::black_box(_lhs #cmp_op _rhs) {
                     #final_ident.wipe_data();
                 }
             }
@@ -739,9 +842,22 @@ pub(crate) struct ObfuscatedBytes {
     pub(crate) main_is_heap: bool,
 }
 
+/// 字节混淆编排入口。
+///
+/// # 动态密钥与错误密钥（有意设计）
+///
+/// `key_pair` 为 `Some` 时，编译期以 `build_key` 派生初始 `sim_ghost`，运行期以
+/// `run_key` 派生 `ghost_state` 解掩码块密钥。若运行期 `run_key` 与编译期
+/// `build_key` 不一致，解密链将输出错误字节，并可能触发完整性谓词的
+/// `wipe_data()` / 容器长度假设，最终表现为未定义行为（UB）。
+///
+/// 该行为是刻意保留的对抗设计：模拟执行、符号执行与切片执行无法仅凭控制流
+/// 判定密钥是否匹配，错误密钥下的不可预测状态会污染分析状态空间。调用方必须
+/// 保证 `run_key` 与 `build_key` 在运行期逐字节一致。
 pub(crate) fn build_obfuscated_bytes(
     mut input: Vec<u8>,
     tier: TierParams,
+    key_pair: Option<KeyPair>,
 ) -> Result<ObfuscatedBytes, String> {
     let size = input.len();
     let id: u64 = random();
@@ -793,13 +909,22 @@ pub(crate) fn build_obfuscated_bytes(
     let mut chunk_nodes: Vec<ChunkNode> = Vec::new();
     let mut chunk_inline_count: u32 = 0;
 
-    // 编译期镜像追踪运行期的 ghost_state 与主容器末尾字节
-    let mut sim_ghost: u64 = ghost_init;
-    let mut sim_last_byte: Option<u8> = None;
+    // 编译期镜像追踪运行期的 ghost_state 与主容器末尾（最多 16 字节）
+    // 若配置了动态密钥，编译期将 build_key 的 LightHasher 哈希混入初始 sim_ghost
+    let mut sim_ghost: u64 = match &key_pair {
+        Some(kp) => ghost_init ^ LightHasher::hash(kp.build_key.as_slice()),
+        None => ghost_init,
+    };
+    let mut sim_tail: Vec<u8> = Vec::with_capacity(32);
 
     for (seq, (chunk_data, is_junk)) in (1..).zip(work_units) {
         let pt_len = chunk_data.len();
-        let chunk_last_byte = chunk_data.last().copied();
+        // 仅在真块时提取当前块末尾最多 16 字节，用于后续更新编译期滑动窗口
+        let chunk_tail: Vec<u8> = if !is_junk {
+            chunk_data[pt_len.saturating_sub(16)..].to_vec()
+        } else {
+            Vec::new()
+        };
         let tag = format!("{id}_{seq}");
         let bytes_chunk = format_ident!("__bytes_chunk_{tag}");
 
@@ -850,12 +975,13 @@ pub(crate) fn build_obfuscated_bytes(
             &chunk_type_path,
             bytes_chunk.clone(),
             &ghost_state,
+            sim_ghost,
             &tag,
             &tier,
         );
 
-        let integrity_check_ast = gen_integrity_check(is_junk, &final_ident);
-
+        let integrity_check_ast =
+            gen_integrity_check(is_junk, &final_ident, &ghost_state, sim_ghost);
         let wrap_chunk =
             random_range(0..100u8) < effective_wrap_pct(tier.wrap_pct, chunk_inline_count);
         let chunk_ret_ty = quote!(#chunk_type_path<#pt_len>);
@@ -946,20 +1072,23 @@ pub(crate) fn build_obfuscated_bytes(
 
         let mut node_stmt = node_stmt;
         node_stmt.extend(quote! {
-            if let Some(&_last_byte) = #bytes.as_slice().last() {
-                #ghost_state = #ghost_state.wrapping_add(_last_byte as u64);
-            }
+            let _slice = #bytes.as_slice();
+            let _tail = &_slice[_slice.len().saturating_sub(16)..];
+            #ghost_state ^= ::obfstr2::hash::LightHasher::hash(_tail);
         });
         chunk_nodes.push(ChunkNode { stmt: node_stmt });
 
         // 同步推进编译期模拟状态：
-        // 真块将明文拼入主容器，更新主容器末字节；垃圾块被 wipe_data 清空为 0 长度，主容器末字节保持不变。
-        if !is_junk && let Some(b) = chunk_last_byte {
-            sim_last_byte = Some(b);
+        // 真块将明文拼入主容器，滑动保留末尾最多 16 字节；
+        // 垃圾块在运行期被 wipe_data 清空为 0 长度，主容器末尾切片保持不变。
+        if !is_junk {
+            sim_tail.extend_from_slice(&chunk_tail);
+            if sim_tail.len() > 16 {
+                let drain_len = sim_tail.len() - 16;
+                sim_tail.drain(..drain_len);
+            }
         }
-        if let Some(last_b) = sim_last_byte {
-            sim_ghost = sim_ghost.wrapping_add(last_b as u64);
-        }
+        sim_ghost ^= LightHasher::hash(sim_tail.as_slice());
     }
 
     let roots = fold_chunk_nodes(
@@ -976,6 +1105,30 @@ pub(crate) fn build_obfuscated_bytes(
         chunk_body.extend(node.stmt);
     }
 
+    // 构造运行期 ghost_state 初始化语句（含 env! 依赖注册与 run_key 哈希混入）
+    let ghost_init_ast = match &key_pair {
+        Some(kp) => {
+            let env_dep_ast = kp.build_key_env.as_ref().map(|var| {
+                quote! {
+                    const _: usize = ::core::env!(#var).len();
+                }
+            });
+            let run_key_ident = format_ident!("__run_key_{id}");
+            let run_key_expr = &kp.run_key;
+            quote! {
+                #env_dep_ast
+                let #run_key_ident: &[u8] = #run_key_expr;
+                #[allow(unused_mut)]
+                let mut #ghost_state: u64 = #ghost_init
+                    ^ ::obfstr2::hash::LightHasher::hash(::core::hint::black_box(#run_key_ident));
+            }
+        }
+        None => quote! {
+            #[allow(unused_mut)]
+            let mut #ghost_state: u64 = #ghost_init;
+        },
+    };
+
     let anti_disasm1 = gen_anti_disasm_ast(&tier);
     let anti_disasm2 = gen_anti_disasm_ast(&tier);
 
@@ -986,7 +1139,7 @@ pub(crate) fn build_obfuscated_bytes(
                 #anti_disasm1
 
                 let mut #raw_bytes = #main_ty::new();
-                let mut #ghost_state: u64 = #ghost_init;
+                #ghost_init_ast
                 #[allow(unused_variables)]
                 let #bytes: &mut #main_ty = &mut #raw_bytes;
                 #chunk_body

@@ -10,6 +10,7 @@
 mod core;
 mod crypto;
 mod fmt;
+mod key;
 mod storage;
 mod types;
 mod user;

@@ -5,154 +5,15 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! 裸机链路测试：`x86_64-unknown-none` 下解密并 `write(1)` 输出。
+//!
+//! 按 `default-features` 拆分为两个 `#[test]` 批次入口，
+//! 各自通过 `dny_run_batch_use_cache` 预热并复用编译缓存。
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-use lib_unknown::dyntest::DnyRun;
+use lib_unknown::dyntest::{DnyTask, dny_run_batch_use_cache};
 use std::time::Duration;
 
-fn obfstr2_dep(no_default: bool) -> String {
-    if no_default {
-        format!(
-            "obfstr2 = {{ path = {:?}, default-features = false }}",
-            env!("CARGO_MANIFEST_DIR")
-        )
-    } else {
-        format!("obfstr2 = {{ path = {:?} }}", env!("CARGO_MANIFEST_DIR"))
-    }
-}
-
-fn run_nostd(macro_call: &str, deps: &str, expected: (char, usize), tag: &str) {
-    let template = r#"
-#![no_std]
-#![no_main]
-#![allow(binary_asm_labels)]
-#![allow(unused)]
-#![allow(unsafe_code)]
-#![cfg(not(test))]
-
-use core::arch::asm;
-use core::{panic};
-
-extern crate alloc;
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-// 极简 bump 分配器：`b2` 可能随机展开为 `HeapBytes`，裸机需提供全局分配器。
-// 128B 载荷下 64KiB 绰绰有余；不回收（测试进程一次运行）。
-struct Bump;
-struct BumpBuf(UnsafeCell<[u8; 65536]>);
-unsafe impl Sync for BumpBuf {}
-static BUMP_BUF: BumpBuf = BumpBuf(UnsafeCell::new([0; 65536]));
-static BUMP_POS: AtomicUsize = AtomicUsize::new(0);
-unsafe impl core::alloc::GlobalAlloc for Bump {
-    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        let size = layout.size();
-        let align = layout.align();
-        let mut pos = BUMP_POS.load(Ordering::Relaxed);
-        loop {
-            let aligned = (pos + align - 1) & !(align - 1);
-            let next = aligned + size;
-            if next > 65536 {
-                return core::ptr::null_mut();
-            }
-            match BUMP_POS.compare_exchange(pos, next, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => return unsafe { (*BUMP_BUF.0.get()).as_mut_ptr().add(aligned) },
-                Err(cur) => pos = cur,
-            }
-        }
-    }
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
-}
-#[global_allocator]
-static GLOBAL: Bump = Bump;
-
-#[panic_handler]
-fn panic(_: &panic::PanicInfo) -> ! {
-    sys_exit(101)
-}
-
-pub mod constants {
-    pub const WRITE: usize = 1;
-    pub const EXIT: usize  = 60;
-}
-
-#[inline(always)]
-pub unsafe fn syscall1(n: usize, a1: usize) -> isize {
-    let ret: isize;
-    unsafe {
-        asm!(
-        "syscall",
-        in("rax") n,
-        in("rdi") a1,
-        lateout("rax") ret,
-        lateout("rcx") _,
-        lateout("r11") _,
-        options(nostack)
-        );
-    }
-    ret
-}
-
-#[inline(always)]
-pub unsafe fn syscall3(n: usize, a1: usize, a2: usize, a3: usize) -> isize {
-    let ret: isize;
-
-    unsafe {
-        asm!(
-        "syscall",
-        in("rax") n,
-        in("rdi") a1,
-        in("rsi") a2,
-        in("rdx") a3,
-        lateout("rax") ret,
-        lateout("rcx") _,
-        lateout("r11") _,
-        options(nostack)
-        );
-    }
-    ret
-}
-
-#[inline(always)]
-pub fn sys_exit(status: usize) -> ! {
-    unsafe { syscall1(constants::EXIT, status); }
-    loop {}
-}
-
-#[inline(always)]
-pub fn sys_write(fd: usize, buf: &[u8]) -> isize {
-    unsafe { syscall3(constants::WRITE, fd, buf.as_ptr() as usize, buf.len()) }
-}
-
-#[unsafe(no_mangle)]
-#[unsafe(naked)]
-pub extern "C" fn _start() -> ! {
-    core::arch::naked_asm!(
-        "xor rbp, rbp",
-        "and rsp, -16",
-        "call {f}",
-        "mov rdi, rax",
-        "call {exit}",
-        f = sym main,
-        exit = sym sys_exit,
-    )
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_eh_personality() {}
-
-
-fn main() -> usize {
-    let bytes = [[bytes]];
-    sys_write(1, &*bytes);
-    0
-}
-
-"#;
-    let code = template.replace("[[bytes]]", macro_call);
-    let mut runner = DnyRun::new(&code, deps);
-    runner.cargo_config(
-        r#"
+const NOSTD_CARGO_CONFIG: &str = r#"
 [build]
 target = "x86_64-unknown-none"
 
@@ -163,178 +24,9 @@ rustflags = [
     "-C", "relocation-model=static",
     "-C", "link-arg=--gc-sections",
 ]
-"#,
-    );
-    let ret = runner.run(Some(Duration::from_secs(180)));
-    assert!(ret.ok, "[{tag}] 裸机构建或运行失败:\n{ret}");
-    assert!(ret.stderr.is_empty(), "[{tag}] 编译失败:\n{ret}");
-    assert_eq!(ret.stdout.len(), expected.1, "[{tag}] 输出长度不符合预期");
-    assert!(
-        ret.stdout.chars().all(|c| c == expected.0),
-        "[{tag}] 解码数据错误，不全为预期的字符!"
-    );
-}
-
-/// 整数裸机链路：`i1!` 纯栈展开的 `u32` 以小端 4 字节 `write(1)` 输出。
-#[allow(clippy::too_many_arguments)]
-fn run_nostd_int(macro_call: &str, deps: &str, expected_bytes: &[u8], tag: &str) {
-    let template = r#"
-#![no_std]
-#![no_main]
-#![allow(binary_asm_labels)]
-#![allow(unused)]
-#![allow(unsafe_code)]
-#![cfg(not(test))]
-
-use core::arch::asm;
-use core::{panic};
-
-extern crate alloc;
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-// 极简 bump 分配器（与字节链路同模板，i1 纯栈实际用不上，保留以对齐构建环境）。
-struct Bump;
-struct BumpBuf(UnsafeCell<[u8; 65536]>);
-unsafe impl Sync for BumpBuf {}
-static BUMP_BUF: BumpBuf = BumpBuf(UnsafeCell::new([0; 65536]));
-static BUMP_POS: AtomicUsize = AtomicUsize::new(0);
-unsafe impl core::alloc::GlobalAlloc for Bump {
-    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        let size = layout.size();
-        let align = layout.align();
-        let mut pos = BUMP_POS.load(Ordering::Relaxed);
-        loop {
-            let aligned = (pos + align - 1) & !(align - 1);
-            let next = aligned + size;
-            if next > 65536 {
-                return core::ptr::null_mut();
-            }
-            match BUMP_POS.compare_exchange(pos, next, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => return unsafe { (*BUMP_BUF.0.get()).as_mut_ptr().add(aligned) },
-                Err(cur) => pos = cur,
-            }
-        }
-    }
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
-}
-#[global_allocator]
-static GLOBAL: Bump = Bump;
-
-#[panic_handler]
-fn panic(_: &panic::PanicInfo) -> ! {
-    sys_exit(101)
-}
-
-pub mod constants {
-    pub const WRITE: usize = 1;
-    pub const EXIT: usize  = 60;
-}
-
-#[inline(always)]
-pub unsafe fn syscall1(n: usize, a1: usize) -> isize {
-    let ret: isize;
-    unsafe {
-        asm!(
-        "syscall",
-        in("rax") n,
-        in("rdi") a1,
-        lateout("rax") ret,
-        lateout("rcx") _,
-        lateout("r11") _,
-        options(nostack)
-        );
-    }
-    ret
-}
-
-#[inline(always)]
-pub unsafe fn syscall3(n: usize, a1: usize, a2: usize, a3: usize) -> isize {
-    let ret: isize;
-
-    unsafe {
-        asm!(
-        "syscall",
-        in("rax") n,
-        in("rdi") a1,
-        in("rsi") a2,
-        in("rdx") a3,
-        lateout("rax") ret,
-        lateout("rcx") _,
-        lateout("r11") _,
-        options(nostack)
-        );
-    }
-    ret
-}
-
-#[inline(always)]
-pub fn sys_exit(status: usize) -> ! {
-    unsafe { syscall1(constants::EXIT, status); }
-    loop {}
-}
-
-#[inline(always)]
-pub fn sys_write(fd: usize, buf: &[u8]) -> isize {
-    unsafe { syscall3(constants::WRITE, fd, buf.as_ptr() as usize, buf.len()) }
-}
-
-#[unsafe(no_mangle)]
-#[unsafe(naked)]
-pub extern "C" fn _start() -> ! {
-    core::arch::naked_asm!(
-        "xor rbp, rbp",
-        "and rsp, -16",
-        "call {f}",
-        "mov rdi, rax",
-        "call {exit}",
-        f = sym main,
-        exit = sym sys_exit,
-    )
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_eh_personality() {}
-
-
-fn main() -> usize {
-    let v: u32 = [[int]];
-    sys_write(1, &v.to_le_bytes());
-    0
-}
-
 "#;
-    let code = template.replace("[[int]]", macro_call);
-    let mut runner = DnyRun::new(&code, deps);
-    runner.cargo_config(
-        r#"
-[build]
-target = "x86_64-unknown-none"
 
-[target.x86_64-unknown-none]
-rustflags = [
-    "-C", "panic=abort",
-    "-C", "opt-level=z",
-    "-C", "relocation-model=static",
-    "-C", "link-arg=--gc-sections",
-]
-"#,
-    );
-    let ret = runner.run(Some(Duration::from_secs(180)));
-    assert!(ret.ok, "[{tag}] 裸机构建或运行失败:\n{ret}");
-    assert!(ret.stderr.is_empty(), "[{tag}] 编译失败:\n{ret}");
-    assert_eq!(
-        ret.stdout.as_bytes(),
-        expected_bytes,
-        "[{tag}] 解码数据错误"
-    );
-}
-
-/// 浮点裸机链路：`fl1!` 纯栈展开的 `f32` 以小端 4 字节 `write(1)` 输出。
-/// 模板与 `run_nostd_int` 同构，仅 `main` 改为浮点取位输出。
-#[allow(clippy::too_many_arguments)]
-fn run_nostd_float(macro_call: &str, deps: &str, expected_bytes: &[u8], tag: &str) {
-    let template = r#"
+const NOSTD_TEMPLATE: &str = r#"
 #![no_std]
 #![no_main]
 #![allow(binary_asm_labels)]
@@ -343,179 +35,13 @@ fn run_nostd_float(macro_call: &str, deps: &str, expected_bytes: &[u8], tag: &st
 #![cfg(not(test))]
 
 use core::arch::asm;
-use core::{panic};
+use core::panic;
 
 extern crate alloc;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-// 极简 bump 分配器（与整数链路同模板，fl1 纯栈实际用不上，保留以对齐构建环境）。
-struct Bump;
-struct BumpBuf(UnsafeCell<[u8; 65536]>);
-unsafe impl Sync for BumpBuf {}
-static BUMP_BUF: BumpBuf = BumpBuf(UnsafeCell::new([0; 65536]));
-static BUMP_POS: AtomicUsize = AtomicUsize::new(0);
-unsafe impl core::alloc::GlobalAlloc for Bump {
-    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        let size = layout.size();
-        let align = layout.align();
-        let mut pos = BUMP_POS.load(Ordering::Relaxed);
-        loop {
-            let aligned = (pos + align - 1) & !(align - 1);
-            let next = aligned + size;
-            if next > 65536 {
-                return core::ptr::null_mut();
-            }
-            match BUMP_POS.compare_exchange(pos, next, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => return unsafe { (*BUMP_BUF.0.get()).as_mut_ptr().add(aligned) },
-                Err(cur) => pos = cur,
-            }
-        }
-    }
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
-}
-#[global_allocator]
-static GLOBAL: Bump = Bump;
-
-#[panic_handler]
-fn panic(_: &panic::PanicInfo) -> ! {
-    sys_exit(101)
-}
-
-pub mod constants {
-    pub const WRITE: usize = 1;
-    pub const EXIT: usize  = 60;
-}
-
-#[inline(always)]
-pub unsafe fn syscall1(n: usize, a1: usize) -> isize {
-    let ret: isize;
-    unsafe {
-        asm!(
-        "syscall",
-        in("rax") n,
-        in("rdi") a1,
-        lateout("rax") ret,
-        lateout("rcx") _,
-        lateout("r11") _,
-        options(nostack)
-        );
-    }
-    ret
-}
-
-#[inline(always)]
-pub unsafe fn syscall3(n: usize, a1: usize, a2: usize, a3: usize) -> isize {
-    let ret: isize;
-
-    unsafe {
-        asm!(
-        "syscall",
-        in("rax") n,
-        in("rdi") a1,
-        in("rsi") a2,
-        in("rdx") a3,
-        lateout("rax") ret,
-        lateout("rcx") _,
-        lateout("r11") _,
-        options(nostack)
-        );
-    }
-    ret
-}
-
-#[inline(always)]
-pub fn sys_exit(status: usize) -> ! {
-    unsafe { syscall1(constants::EXIT, status); }
-    loop {}
-}
-
-#[inline(always)]
-pub fn sys_write(fd: usize, buf: &[u8]) -> isize {
-    unsafe { syscall3(constants::WRITE, fd, buf.as_ptr() as usize, buf.len()) }
-}
-
-#[unsafe(no_mangle)]
-#[unsafe(naked)]
-pub extern "C" fn _start() -> ! {
-    core::arch::naked_asm!(
-        "xor rbp, rbp",
-        "and rsp, -16",
-        "call {f}",
-        "mov rdi, rax",
-        "call {exit}",
-        f = sym main,
-        exit = sym sys_exit,
-    )
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_eh_personality() {}
-
-
-fn main() -> usize {
-    // 注意：dyntest 以 String 回传 stdout，非 UTF-8 输出会被 lossy 改写，
-    // 故此处将位字节转 hex ASCII 再输出，保证逐字节精确可断言。
-    let v: f32 = [[float]];
-    let b = v.to_bits().to_le_bytes();
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = [0u8; 8];
-    let mut k = 0;
-    while k < 4 {
-        out[2 * k] = HEX[(b[k] >> 4) as usize];
-        out[2 * k + 1] = HEX[(b[k] & 15) as usize];
-        k += 1;
-    }
-    sys_write(1, &out);
-    0
-}
-
-"#;
-    let code = template.replace("[[float]]", macro_call);
-    let mut runner = DnyRun::new(&code, deps);
-    runner.cargo_config(
-        r#"
-[build]
-target = "x86_64-unknown-none"
-
-[target.x86_64-unknown-none]
-rustflags = [
-    "-C", "panic=abort",
-    "-C", "opt-level=z",
-    "-C", "relocation-model=static",
-    "-C", "link-arg=--gc-sections",
-]
-"#,
-    );
-    let ret = runner.run(Some(Duration::from_secs(180)));
-    assert!(ret.ok, "[{tag}] 裸机构建或运行失败:\n{ret}");
-    assert!(ret.stderr.is_empty(), "[{tag}] 编译失败:\n{ret}");
-    assert_eq!(
-        ret.stdout.as_bytes(),
-        expected_bytes,
-        "[{tag}] 解码数据错误"
-    );
-}
-
-/// 宽 C 字符串裸机链路：把 `cwN!` 的 UTF-16 容器按本机字节序输出并逐字节比对。
-/// 目标为 `x86_64-unknown-none`（小端），与编译期 `to_le_bytes` 线格式一致。
-fn run_nostd_bytes(macro_call: &str, deps: &str, expected_bytes: &[u8], tag: &str) {
-    let template = r#"
-#![no_std]
-#![no_main]
-#![allow(binary_asm_labels)]
-#![allow(unused)]
-#![allow(unsafe_code)]
-#![cfg(not(test))]
-
-use core::arch::asm;
-use core::{panic};
-
-extern crate alloc;
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-// 极简 bump 分配器：cw2 可能随机展开为 HeapU16，裸机需提供全局分配器。
+// 极简 bump 分配器：部分宏可能随机展开为堆容器（HeapBytes / HeapU16），裸机需提供全局分配器。
 // 128 码元载荷下 64KiB 绰绰有余；不回收（测试进程一次运行）。
 struct Bump;
 struct BumpBuf(UnsafeCell<[u8; 65536]>);
@@ -559,13 +85,13 @@ pub unsafe fn syscall1(n: usize, a1: usize) -> isize {
     let ret: isize;
     unsafe {
         asm!(
-        "syscall",
-        in("rax") n,
-        in("rdi") a1,
-        lateout("rax") ret,
-        lateout("rcx") _,
-        lateout("r11") _,
-        options(nostack)
+            "syscall",
+            in("rax") n,
+            in("rdi") a1,
+            lateout("rax") ret,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack)
         );
     }
     ret
@@ -574,18 +100,17 @@ pub unsafe fn syscall1(n: usize, a1: usize) -> isize {
 #[inline(always)]
 pub unsafe fn syscall3(n: usize, a1: usize, a2: usize, a3: usize) -> isize {
     let ret: isize;
-
     unsafe {
         asm!(
-        "syscall",
-        in("rax") n,
-        in("rdi") a1,
-        in("rsi") a2,
-        in("rdx") a3,
-        lateout("rax") ret,
-        lateout("rcx") _,
-        lateout("r11") _,
-        options(nostack)
+            "syscall",
+            in("rax") n,
+            in("rdi") a1,
+            in("rsi") a2,
+            in("rdx") a3,
+            lateout("rax") ret,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack)
         );
     }
     ret
@@ -619,174 +144,214 @@ pub extern "C" fn _start() -> ! {
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_eh_personality() {}
 
-
 fn main() -> usize {
-    let v: alloc::vec::Vec<u8> = [[bytes]];
-    sys_write(1, &v);
+    [[main_body]]
     0
 }
-
 "#;
-    let code = template.replace("[[bytes]]", macro_call);
-    let mut runner = DnyRun::new(&code, deps);
-    runner.cargo_config(
-        r#"
-[build]
-target = "x86_64-unknown-none"
 
-[target.x86_64-unknown-none]
-rustflags = [
-    "-C", "panic=abort",
-    "-C", "opt-level=z",
-    "-C", "relocation-model=static",
-    "-C", "link-arg=--gc-sections",
-]
-"#,
-    );
-    let ret = runner.run(Some(Duration::from_secs(180)));
-    assert!(ret.ok, "[{tag}] 裸机构建或运行失败:\n{ret}");
-    assert!(ret.stderr.is_empty(), "[{tag}] 编译失败:\n{ret}");
-    assert_eq!(
-        ret.stdout.as_bytes(),
-        expected_bytes,
-        "[{tag}] 解码数据错误"
-    );
-}
-
-#[test]
-fn b1_nostd_no_alloc() {
-    // 128 × 'a'，纯栈、无堆、关闭默认特性
-    let lit = "a".repeat(128);
-    let call = format!(r#"obfstr2::b1!(b"{lit}")"#);
-    run_nostd(&call, &obfstr2_dep(true), ('a', 128), "b1_nostd");
-}
-
-#[test]
-fn b2_nostd_default_features() {
-    let lit = "a".repeat(128);
-    let call = format!(r#"obfstr2::b2!(b"{lit}")"#);
-    run_nostd(&call, &obfstr2_dep(false), ('a', 128), "b2_nostd");
-}
-
-#[test]
-fn cw1_nostd_no_alloc() {
-    // 128 × 'a' 的宽 C 字符串（UTF-16LE + 结尾 0u16），纯栈、无堆、关闭默认特性。
-    let lit = "a".repeat(128);
-    let call = format!(r#"{{ let w = obfstr2::cw1!("{lit}"); w.as_byte_slice().to_vec() }}"#);
-    let mut expected = Vec::with_capacity(256 + 2);
-    for u in lit.encode_utf16() {
-        expected.extend_from_slice(&u.to_le_bytes());
+fn obfstr2_dep(no_default: bool) -> String {
+    if no_default {
+        format!(
+            "obfstr2 = {{ path = {:?}, default-features = false }}",
+            env!("CARGO_MANIFEST_DIR")
+        )
+    } else {
+        format!("obfstr2 = {{ path = {:?} }}", env!("CARGO_MANIFEST_DIR"))
     }
-    expected.extend_from_slice(&[0, 0]);
-    run_nostd_bytes(&call, &obfstr2_dep(true), &expected, "cw1_nostd");
 }
 
-#[test]
-fn cw2_nostd_default_features() {
-    // 同上，默认特性下外层可能随机选择 HeapU16。
-    let lit = "a".repeat(128);
-    let call = format!(r#"{{ let w = obfstr2::cw2!("{lit}"); w.as_byte_slice().to_vec() }}"#);
-    let mut expected = Vec::with_capacity(256 + 2);
-    for u in lit.encode_utf16() {
-        expected.extend_from_slice(&u.to_le_bytes());
+/// 对应原 `run_nostd`：`&*bytes` 解引用输出
+fn body_deref_bytes(expr: &str) -> String {
+    format!("let bytes = {expr};\n    sys_write(1, &*bytes);")
+}
+
+/// 对应原 `run_nostd_bytes`：`Vec<u8>` 直接输出
+fn body_vec_u8(expr: &str) -> String {
+    format!("let v: alloc::vec::Vec<u8> = {expr};\n    sys_write(1, &v);")
+}
+
+/// 对应原 `run_nostd_int`：`u32` 小端 4 字节输出
+fn body_u32_le(expr: &str) -> String {
+    format!("let v: u32 = {expr};\n    sys_write(1, &v.to_le_bytes());")
+}
+
+/// 对应原 `run_nostd_float`：`f32` 小端位字节转 8 字节 hex ASCII 输出（避免非 UTF-8 被 lossy 改写）
+fn body_f32_hex(expr: &str) -> String {
+    format!(
+        r#"let v: f32 = {expr};
+    let b = v.to_bits().to_le_bytes();
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = [0u8; 8];
+    let mut k = 0;
+    while k < 4 {{
+        out[2 * k] = HEX[(b[k] >> 4) as usize];
+        out[2 * k + 1] = HEX[(b[k] & 15) as usize];
+        k += 1;
+    }}
+    sys_write(1, &out);"#
+    )
+}
+
+/// 批量构建并运行同一 `deps` 配置下的所有裸机任务，复用首任务缓存。
+fn run_nostd_batch(deps: &str, cases: &[(&str, String, Vec<u8>)]) {
+    let tasks = cases.iter().map(|(tag, main_body, _)| {
+        let code = NOSTD_TEMPLATE.replace("[[main_body]]", main_body);
+        DnyTask::new(*tag, code)
+            .with_deps(deps)
+            .with_cargo_config(NOSTD_CARGO_CONFIG)
+    });
+
+    let results = dny_run_batch_use_cache(tasks, Some(Duration::from_secs(180)), None, None);
+    assert_eq!(results[0].0, "init_cache");
+
+    for ((expected_tag, _, expected_bytes), (actual_tag, ret)) in
+        cases.iter().zip(results.iter().skip(1))
+    {
+        assert_eq!(expected_tag, actual_tag);
+        assert!(ret.ok, "[{actual_tag}] 裸机构建或运行失败:\n{ret}");
+        assert!(ret.stderr.is_empty(), "[{actual_tag}] 编译失败:\n{ret}");
+        assert_eq!(
+            ret.stdout.as_bytes(),
+            expected_bytes.as_slice(),
+            "[{actual_tag}] 解码数据错误"
+        );
     }
-    expected.extend_from_slice(&[0, 0]);
-    run_nostd_bytes(&call, &obfstr2_dep(false), &expected, "cw2_nostd");
 }
 
 #[test]
-fn cw3_nostd_default_features() {
-    // 高强度档在 alloc 下主容器恒为 HeapU16；验证裸机堆分配链路。
+fn nostd_no_alloc_batch() {
     let lit = "a".repeat(128);
-    let call = format!(r#"{{ let w = obfstr2::cw3!("{lit}"); w.as_byte_slice().to_vec() }}"#);
-    let mut expected = Vec::with_capacity(256 + 2);
+    let expected_a128 = vec![b'a'; 128];
+
+    let mut expected_w128 = Vec::with_capacity(256);
     for u in lit.encode_utf16() {
-        expected.extend_from_slice(&u.to_le_bytes());
+        expected_w128.extend_from_slice(&u.to_le_bytes());
     }
-    expected.extend_from_slice(&[0, 0]);
-    run_nostd_bytes(&call, &obfstr2_dep(false), &expected, "cw3_nostd");
-}
+    let mut expected_cw128 = expected_w128.clone();
+    expected_cw128.extend_from_slice(&[0, 0]);
 
-#[test]
-fn w1_nostd_no_alloc() {
-    // 128 × 'a' 的宽字符串（UTF-16LE，无结尾 NUL），纯栈、无堆、关闭默认特性。
-    let lit = "a".repeat(128);
-    let call = format!(r#"{{ let w = obfstr2::w1!("{lit}"); w.as_byte_slice().to_vec() }}"#);
-    let mut expected = Vec::with_capacity(256);
-    for u in lit.encode_utf16() {
-        expected.extend_from_slice(&u.to_le_bytes());
-    }
-    run_nostd_bytes(&call, &obfstr2_dep(true), &expected, "w1_nostd");
-}
-
-#[test]
-fn w3_nostd_default_features() {
-    // 高强度档在 alloc 下主容器恒为 HeapU16；验证无 NUL 宽字符串的裸机堆链路。
-    let lit = "a".repeat(128);
-    let call = format!(r#"{{ let w = obfstr2::w3!("{lit}"); w.as_byte_slice().to_vec() }}"#);
-    let mut expected = Vec::with_capacity(256);
-    for u in lit.encode_utf16() {
-        expected.extend_from_slice(&u.to_le_bytes());
-    }
-    run_nostd_bytes(&call, &obfstr2_dep(false), &expected, "w3_nostd");
-}
-
-#[test]
-fn cs1_nostd_no_alloc() {
-    // 128 × 'a' 的 C 字符串，纯栈、无堆、关闭默认特性；
-    // 经 UFCS 取 as_bytes 后 to_vec（bump 分配器兜底），复用字节链路模板。
-    let lit = "a".repeat(128);
-    let call = format!(
-        r#"{{ let s = obfstr2::cs1!(c"{lit}"); obfstr2::types::cstr::CStr::as_bytes(&s).to_vec() }}"#
-    );
-    run_nostd(&call, &obfstr2_dep(true), ('a', 128), "cs1_nostd");
-}
-
-#[test]
-fn i1_nostd_no_alloc() {
-    // 0x61616161u32 小端即 4 × 'a'，纯栈、无堆、关闭默认特性
-    run_nostd_int(
-        "obfstr2::i1!(0x61616161u32)",
-        &obfstr2_dep(true),
-        b"aaaa",
-        "i1_nostd",
-    );
-}
-
-#[test]
-fn b_user_nostd_no_alloc() {
-    // 自定义档：配置块 + 栈偏好 + 自定义延迟 / 安全度，128 × 'a'，关闭默认特性
-    let lit = "a".repeat(128);
-    let call = format!(
-        r#"obfstr2::b_user!({{ prefer_stack: true, max_latency: 40, min_security: 60 }}, b"{lit}")"#
-    );
-    run_nostd(&call, &obfstr2_dep(true), ('a', 128), "b_user_nostd");
-}
-
-#[test]
-fn i_user_nostd_no_alloc() {
-    // 自定义档整数链路：0x61616161u32 小端即 4 × 'a'，纯栈、无堆、关闭默认特性
-    run_nostd_int(
-        "obfstr2::i_user!({ prefer_stack: true, max_latency: 40 }, 0x61616161u32)",
-        &obfstr2_dep(true),
-        b"aaaa",
-        "i_user_nostd",
-    );
-}
-
-#[test]
-fn fl1_nostd_no_alloc() {
-    // 1.5f32 的小端位字节 hex（"0000c03f"），纯栈、无堆、关闭默认特性
-    let expected_hex: String = 1.5f32
+    let expected_fl1_hex: Vec<u8> = 1.5f32
         .to_bits()
         .to_le_bytes()
         .iter()
-        .map(|b| format!("{b:02x}"))
+        .flat_map(|b| format!("{b:02x}").into_bytes())
         .collect();
-    run_nostd_float(
-        "obfstr2::fl1!(1.5f32)",
-        &obfstr2_dep(true),
-        expected_hex.as_bytes(),
-        "fl1_nostd",
-    );
+
+    let cases = vec![
+        // 1. b1: 128 × 'a'，纯栈、无堆
+        (
+            "b1_nostd",
+            body_deref_bytes(&format!(r#"obfstr2::b1!(b"{lit}")"#)),
+            expected_a128.clone(),
+        ),
+        // 2. cw1: 128 × 'a' 宽 C 字符串（UTF-16LE + 结尾 0u16）
+        (
+            "cw1_nostd",
+            body_vec_u8(&format!(
+                r#"{{ let w = obfstr2::cw1!("{lit}"); w.as_byte_slice().to_vec() }}"#
+            )),
+            expected_cw128,
+        ),
+        // 3. w1: 128 × 'a' 宽字符串（UTF-16LE，无结尾 NUL）
+        (
+            "w1_nostd",
+            body_vec_u8(&format!(
+                r#"{{ let w = obfstr2::w1!("{lit}"); w.as_byte_slice().to_vec() }}"#
+            )),
+            expected_w128,
+        ),
+        // 4. cs1: 128 × 'a' C 字符串
+        (
+            "cs1_nostd",
+            body_deref_bytes(&format!(
+                r#"{{ let s = obfstr2::cs1!(c"{lit}"); obfstr2::types::cstr::CStr::as_bytes(&s).to_vec() }}"#
+            )),
+            expected_a128.clone(),
+        ),
+        // 5. i1: 0x61616161u32 小端即 4 × 'a'
+        (
+            "i1_nostd",
+            body_u32_le("obfstr2::i1!(0x61616161u32)"),
+            b"aaaa".to_vec(),
+        ),
+        // 6. b_user: 自定义档字节串
+        (
+            "b_user_nostd",
+            body_deref_bytes(&format!(
+                r#"obfstr2::b_user!({{ prefer_stack: true, max_latency: 40, min_security: 60 }}, b"{lit}")"#
+            )),
+            expected_a128,
+        ),
+        // 7. i_user: 自定义档整数链路
+        (
+            "i_user_nostd",
+            body_u32_le("obfstr2::i_user!({ prefer_stack: true, max_latency: 40 }, 0x61616161u32)"),
+            b"aaaa".to_vec(),
+        ),
+        // 8. fl1: 1.5f32 小端位字节 hex（"0000c03f"）
+        (
+            "fl1_nostd",
+            body_f32_hex("obfstr2::fl1!(1.5f32)"),
+            expected_fl1_hex,
+        ),
+    ];
+
+    run_nostd_batch(&obfstr2_dep(true), &cases);
+}
+
+#[test]
+fn nostd_default_features_batch() {
+    let lit = "a".repeat(128);
+    let expected_a128 = vec![b'a'; 128];
+
+    let mut expected_w128 = Vec::with_capacity(256);
+    for u in lit.encode_utf16() {
+        expected_w128.extend_from_slice(&u.to_le_bytes());
+    }
+    let mut expected_cw128 = expected_w128.clone();
+    expected_cw128.extend_from_slice(&[0, 0]);
+
+    let cases = vec![
+        // 1. b2: 默认特性下可能随机展开为 HeapBytes
+        (
+            "b2_nostd",
+            body_deref_bytes(&format!(r#"obfstr2::b2!(b"{lit}")"#)),
+            expected_a128.clone(),
+        ),
+        // 2. cw2: 默认特性下外层可能随机选择 HeapU16
+        (
+            "cw2_nostd",
+            body_vec_u8(&format!(
+                r#"{{ let w = obfstr2::cw2!("{lit}"); w.as_byte_slice().to_vec() }}"#
+            )),
+            expected_cw128.clone(),
+        ),
+        // 3. cw3: 高强度档在 alloc 下主容器恒为 HeapU16
+        (
+            "cw3_nostd",
+            body_vec_u8(&format!(
+                r#"{{ let w = obfstr2::cw3!("{lit}"); w.as_byte_slice().to_vec() }}"#
+            )),
+            expected_cw128,
+        ),
+        // 4. w3: 高强度档无 NUL 宽字符串裸机堆链路
+        (
+            "w3_nostd",
+            body_vec_u8(&format!(
+                r#"{{ let w = obfstr2::w3!("{lit}"); w.as_byte_slice().to_vec() }}"#
+            )),
+            expected_w128,
+        ),
+        // 5. s_key: 动态密钥（build_key 字节串 + 运行期局部 key），默认特性（含堆）
+        (
+            "s_key_nostd",
+            body_deref_bytes(&format!(
+                r#"{{ let key: &[u8] = b"{lit}"; let s = obfstr2::s_key!({{ build_key: b"{lit}", run_key: key }}, "{lit}"); obfstr2::types::str::Str::as_str(&s).as_bytes().to_vec() }}"#
+            )),
+            expected_a128,
+        ),
+    ];
+
+    run_nostd_batch(&obfstr2_dep(false), &cases);
 }

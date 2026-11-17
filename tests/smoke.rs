@@ -4,12 +4,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! 根 crate 冒烟测试：全部 24 个宏的小载荷 roundtrip。
+//! 根 crate 冒烟测试：三档宏、`*_user!` 与 `*_key!` 家族的小载荷 roundtrip。
 //!
 //! 直接调用宏做断言，无需 dyntest 现场建工程，毫秒级。
 use obfstr2::{
-    b1, b2, b3, cs1, cs2, cs3, cw1, cw2, cw3, f1, f2, f3, fl1, fl2, fl3, i1, i2, i3, s1, s2, s3,
-    w1, w2, w3,
+    b_key, b_key_user, b1, b2, b3, cs_key, cs_key_user, cs1, cs2, cs3, cw_key, cw_key_user, cw1,
+    cw2, cw3, f_key, f_key_user, f1, f2, f3, fl_key, fl_key_user, fl1, fl2, fl3, i_key, i_key_user,
+    i1, i2, i3, s_fmt_key, s_fmt_key_user, s_key, s_key_user, s1, s2, s3, w_key, w_key_user, w1,
+    w2, w3,
 };
 
 macro_rules! assert_obf_s {
@@ -499,4 +501,220 @@ fn user_macro_forwarding_through_user_macro_rules() {
     }
     assert_eq!(&*fwd_s!("hello"), "hello");
     assert_eq!(&*fwd_cfg_tt!({ max_latency: 40 }, "hello"), "hello");
+}
+
+// ── 动态密钥档：正确 run_key 的端到端 roundtrip ────────────────────────────
+
+const KEY_STR: &str = "obfstr2-test-key-0123456789abcdef";
+
+/// 运行期读取密钥（Path/Call 形态，绕开编译期字面量拒绝）。
+fn run_key() -> &'static [u8] {
+    KEY_STR.as_bytes()
+}
+
+#[test]
+fn key_macros_roundtrip() {
+    assert_eq!(
+        &*s_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            ""
+        ),
+        ""
+    );
+    assert_eq!(
+        &*s_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            "hello"
+        ),
+        "hello"
+    );
+    assert_eq!(
+        &*s_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            "你好，世界🦀"
+        ),
+        "你好，世界🦀"
+    );
+
+    assert_eq!(
+        &*b_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            b"abc"
+        ),
+        b"abc"
+    );
+    assert_eq!(
+        &*b_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            [0x61, 98, 99]
+        ),
+        &[0x61u8, 0x62, 0x63][..]
+    );
+
+    assert_eq!(
+        &*f_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            "assets/fixture.bin"
+        ),
+        b"secret"
+    );
+
+    assert_eq!(
+        s_fmt_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            "hello, {}!",
+            "world"
+        ),
+        "hello, world!"
+    );
+
+    assert_eq!(
+        i_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            42u8
+        ),
+        42u8
+    );
+    assert_eq!(
+        i_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            -1
+        ),
+        -1i32
+    );
+
+    assert_eq!(
+        fl_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            3.15f64
+        )
+        .to_bits(),
+        3.15f64.to_bits()
+    );
+
+    assert_eq!(
+        &*cs_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            c"/bin/sh"
+        ),
+        c"/bin/sh"
+    );
+
+    assert_eq!(
+        &*w_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            "a\0b"
+        ),
+        &[0x61u16, 0, 0x62][..]
+    );
+
+    let cw = cw_key!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        "kernel32.dll"
+    );
+    assert_eq!(
+        &cw[..cw.len() - 1],
+        "kernel32.dll".encode_utf16().collect::<Vec<_>>().as_slice()
+    );
+    assert_eq!(cw[cw.len() - 1], 0);
+}
+
+#[test]
+fn key_user_macros_roundtrip() {
+    let s = s_key_user!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { max_latency: 50, min_security: 60, prefer_stack: true },
+        "hello"
+    );
+    assert_eq!(&*s, "hello");
+
+    assert_eq!(
+        &*b_key_user!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { prefer_stack: true },
+            b"abc"
+        ),
+        b"abc"
+    );
+
+    assert_eq!(
+        &*f_key_user!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { prefer_stack: true },
+            "assets/fixture.bin"
+        ),
+        b"secret"
+    );
+
+    assert_eq!(
+        s_fmt_key_user!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { max_latency: 50 },
+            "hi, {name}!",
+            name = "world"
+        ),
+        "hi, world!"
+    );
+
+    assert_eq!(
+        i_key_user!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { max_latency: 50 },
+            42u32
+        ),
+        42u32
+    );
+
+    assert_eq!(
+        fl_key_user!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { max_latency: 50 },
+            3.15f32
+        )
+        .to_bits(),
+        3.15f32.to_bits()
+    );
+
+    assert_eq!(
+        &*cs_key_user!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { prefer_stack: true },
+            c"/bin/sh"
+        ),
+        c"/bin/sh"
+    );
+
+    assert_eq!(
+        &*w_key_user!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { prefer_stack: true },
+            "a\0b"
+        ),
+        &[0x61u16, 0, 0x62][..]
+    );
+
+    let cw = cw_key_user!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { min_security: 60 },
+        "kernel32.dll"
+    );
+    assert_eq!(
+        &cw[..cw.len() - 1],
+        "kernel32.dll".encode_utf16().collect::<Vec<_>>().as_slice()
+    );
+    assert_eq!(cw[cw.len() - 1], 0);
+}
+
+#[test]
+fn key_build_key_from_env_roundtrip() {
+    // build_key 走 env!：过程宏展开期读取，并在产物中注册 Cargo 环境依赖。
+    // run_key 必须来自运行期表达式（这里用函数调用，避免被编译期字面量校验拒绝）。
+    fn pkg_name_bytes() -> &'static [u8] {
+        env!("CARGO_PKG_NAME").as_bytes()
+    }
+    let s = s_key!(
+        { build_key: env!("CARGO_PKG_NAME"), run_key: pkg_name_bytes() },
+        "env-keyed"
+    );
+    assert_eq!(&*s, "env-keyed");
 }

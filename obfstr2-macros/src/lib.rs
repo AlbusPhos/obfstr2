@@ -6,7 +6,8 @@
 
 //! `obfstr2` 的内部过程宏实现 crate，无运行时，不可 doctest。
 //!
-//! 对外暴露 `s1~3!`、`b1~3!`、`f1~3!`、`i1~3!`、`fl1~3!`、`cs1~3!`、`w1~3!`、`cw1~3!`（低延迟 / 均衡 / 高强度三档）与 `s_fmt!` 的过程宏本体。
+//! 对外暴露 `s1~3!`、`b1~3!`、`f1~3!`、`i1~3!`、`fl1~3!`、`cs1~3!`、`w1~3!`、`cw1~3!`（低延迟 / 均衡 / 高强度三档）、`s_fmt!`，
+//! 以及 `*_user!` 自定义档与 `*_key!` / `*_key_user!` 动态密钥档的过程宏本体。
 //!
 //! # Warning
 //!
@@ -559,4 +560,224 @@ pub fn w_user(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn cw_user(input: TokenStream) -> TokenStream {
     expand_user(input, parse::parse_cwstr_user, types::cw_user)
+}
+
+// ── `*_key` 动态密钥档：`({ build_key, run_key }, 载荷)`，以 TIER_BALANCED 为基底 ──
+
+fn expand_key<T>(
+    input: TokenStream,
+    macro_name: &str,
+    parser: fn(proc_macro2::TokenStream, &str) -> syn::Result<(T, parse::KeyPair)>,
+    builder: fn(T, parse::KeyPair) -> Result<proc_macro2::TokenStream, String>,
+) -> TokenStream {
+    match parser(input.into(), macro_name) {
+        Ok((parsed, keys)) => match builder(parsed, keys) {
+            Ok(ts) => ts.into(),
+            Err(e) => err_to_compile_error(proc_macro2::Span::call_site(), e),
+        },
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+fn expand_key_user<T>(
+    input: TokenStream,
+    parser: fn(proc_macro2::TokenStream) -> syn::Result<(T, parse::KeyPair, core::TierParams)>,
+    builder: fn(T, parse::KeyPair, core::TierParams) -> Result<proc_macro2::TokenStream, String>,
+) -> TokenStream {
+    match parser(input.into()) {
+        Ok((parsed, keys, tier)) => match builder(parsed, keys, tier) {
+            Ok(ts) => ts.into(),
+            Err(e) => err_to_compile_error(proc_macro2::Span::call_site(), e),
+        },
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// 字符串混淆宏本体（动态密钥档）：接受 `({ build_key: ..., run_key: ... }, "...")`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn s_key(input: TokenStream) -> TokenStream {
+    expand_key(input, "s_key!", parse::parse_str_key, types::s_key)
+}
+
+/// 字节串混淆宏本体（动态密钥档）：接受 `({ build_key: ..., run_key: ... }, b"..." | [...])`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn b_key(input: TokenStream) -> TokenStream {
+    expand_key(input, "b_key!", parse::parse_bytes_key, types::b_key)
+}
+
+/// 文件混淆宏本体（动态密钥档）：接受 `({ build_key: ..., run_key: ... }, "path")`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn f_key(input: TokenStream) -> TokenStream {
+    expand_key(input, "f_key!", parse::parse_file_key, types::b_key)
+}
+
+/// 格式化字符串混淆宏本体（动态密钥档）：接受 `({ build_key: ..., run_key: ... }, "fmt {}", args...)`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn s_fmt_key(input: TokenStream) -> TokenStream {
+    match parse::split_key_prefix(input.into(), "s_fmt_key!") {
+        Ok((keys, rest)) => fmt::sfmt(rest, move |s| types::s_key(s, keys.clone())).into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// 整数混淆宏本体（动态密钥档）：接受 `({ build_key: ..., run_key: ... }, <int_lit>)`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn i_key(input: TokenStream) -> TokenStream {
+    expand_key(input, "i_key!", parse::parse_int_key, types::i_key)
+}
+
+/// 浮点混淆宏本体（动态密钥档）：接受 `({ build_key: ..., run_key: ... }, <float_lit>)`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn fl_key(input: TokenStream) -> TokenStream {
+    expand_key(input, "fl_key!", parse::parse_float_key, types::fl_key)
+}
+
+/// C 字符串混淆宏本体（动态密钥档）：接受 `({ build_key: ..., run_key: ... }, "..." | c"..." | b"...")`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn cs_key(input: TokenStream) -> TokenStream {
+    expand_key(input, "cs_key!", parse::parse_cstr_key, types::cs_key)
+}
+
+/// 宽字符串混淆宏本体（动态密钥档）：接受 `({ build_key: ..., run_key: ... }, "...")`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn w_key(input: TokenStream) -> TokenStream {
+    expand_key(input, "w_key!", parse::parse_wstr_key, types::w_key)
+}
+
+/// 宽 C 字符串混淆宏本体（动态密钥档）：接受 `({ build_key: ..., run_key: ... }, "...")`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn cw_key(input: TokenStream) -> TokenStream {
+    expand_key(input, "cw_key!", parse::parse_cwstr_key, types::cw_key)
+}
+
+/// 字符串混淆宏本体（动态密钥 + 自定义档）：接受 `({ build_key, run_key }, { key: val, ... }, "...")`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn s_key_user(input: TokenStream) -> TokenStream {
+    expand_key_user(input, parse::parse_str_key_user, types::s_key_user)
+}
+
+/// 字节串混淆宏本体（动态密钥 + 自定义档）：接受 `({ build_key, run_key }, { key: val, ... }, b"..." | [...])`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn b_key_user(input: TokenStream) -> TokenStream {
+    expand_key_user(input, parse::parse_bytes_key_user, types::b_key_user)
+}
+
+/// 文件混淆宏本体（动态密钥 + 自定义档）：接受 `({ build_key, run_key }, { key: val, ... }, "path")`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn f_key_user(input: TokenStream) -> TokenStream {
+    expand_key_user(input, parse::parse_file_key_user, types::b_key_user)
+}
+
+/// 格式化字符串混淆宏本体（动态密钥 + 自定义档）：接受 `({ build_key, run_key }, { key: val, ... }, "fmt {}", args...)`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn s_fmt_key_user(input: TokenStream) -> TokenStream {
+    match parse::split_key_user_prefix(input.into(), "s_fmt_key_user!") {
+        Ok((keys, tier, rest)) => fmt::sfmt(rest, move |s| {
+            types::s_key_user(s, keys.clone(), tier.clone())
+        })
+        .into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// 整数混淆宏本体（动态密钥 + 自定义档）：接受 `({ build_key, run_key }, { key: val, ... }, <int_lit>)`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn i_key_user(input: TokenStream) -> TokenStream {
+    expand_key_user(input, parse::parse_int_key_user, types::i_key_user)
+}
+
+/// 浮点混淆宏本体（动态密钥 + 自定义档）：接受 `({ build_key, run_key }, { key: val, ... }, <float_lit>)`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn fl_key_user(input: TokenStream) -> TokenStream {
+    expand_key_user(input, parse::parse_float_key_user, types::fl_key_user)
+}
+
+/// C 字符串混淆宏本体（动态密钥 + 自定义档）：接受 `({ build_key, run_key }, { key: val, ... }, "..." | c"..." | b"...")`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn cs_key_user(input: TokenStream) -> TokenStream {
+    expand_key_user(input, parse::parse_cstr_key_user, types::cs_key_user)
+}
+
+/// 宽字符串混淆宏本体（动态密钥 + 自定义档）：接受 `({ build_key, run_key }, { key: val, ... }, "...")`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn w_key_user(input: TokenStream) -> TokenStream {
+    expand_key_user(input, parse::parse_wstr_key_user, types::w_key_user)
+}
+
+/// 宽 C 字符串混淆宏本体（动态密钥 + 自定义档）：接受 `({ build_key, run_key }, { key: val, ... }, "...")`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn cw_key_user(input: TokenStream) -> TokenStream {
+    expand_key_user(input, parse::parse_cwstr_key_user, types::cw_key_user)
 }

@@ -7,8 +7,8 @@
 //! 输入解析层：各宏字面量输入 → 载荷字节 / 编码结构。
 //!
 //! 档位适配见 `crate::types`，混淆编排见 `crate::core`。
-//! 本文件只保留输入校验（字面量形态、后缀、范围、NUL、文件存在性），不做加密与发射。
-//! 文末为 `*_user!` 自定义档的 `({ 配置 }, 载荷)` 统一前缀解析。
+//! 本文件只保留输入校验（字面量形态、后缀、范围、NUL、文件存在性、密钥合法性），不做加密与发射。
+//! 文末为 `*_user!`、`*_key!` 与 `*_key_user!` 的花括号前缀统一解析。
 
 use proc_macro2::TokenStream as TokenStream2;
 
@@ -457,6 +457,34 @@ pub(crate) fn parse_str(input: TokenStream2) -> syn::Result<String> {
     syn::parse2::<syn::LitStr>(input).map(|lit| lit.value())
 }
 
+/// 解析 `[0x41, 66, ...]` 形式的 `u8` 整数字面量数组（供 `bN!` 与 `build_key` 共用）。
+fn parse_byte_array_lit(arr: &syn::ExprArray) -> syn::Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(arr.elems.len());
+    for elem in &arr.elems {
+        match unwrap_group_ref(elem) {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(n),
+                ..
+            }) => match n.base10_parse::<u8>() {
+                Ok(b) => bytes.push(b),
+                Err(_) => {
+                    return Err(syn::Error::new_spanned(
+                        n,
+                        "字节数组元素必须在 0..=255 范围内",
+                    ));
+                }
+            },
+            other => {
+                return Err(syn::Error::new_spanned(
+                    other,
+                    "字节数组只接受 0..=255 的整数字面量",
+                ));
+            }
+        }
+    }
+    Ok(bytes)
+}
+
 /// 解析 `bN!` 输入：`b"..."` 字节串或 `[0x41, 66, ...]` 数组（元素须为 0..=255 的整数字面量）。
 pub(crate) fn parse_bytes(input: TokenStream2) -> syn::Result<Vec<u8>> {
     let expr: syn::Expr = syn::parse2(input)?;
@@ -467,32 +495,7 @@ pub(crate) fn parse_bytes(input: TokenStream2) -> syn::Result<Vec<u8>> {
             ..
         }) => Ok(lit.value()),
         // 2. [0x41, 66, ...] 字节数组形式
-        syn::Expr::Array(arr) => {
-            let mut bytes = Vec::with_capacity(arr.elems.len());
-            for elem in &arr.elems {
-                match unwrap_group_ref(elem) {
-                    syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Int(n),
-                        ..
-                    }) => match n.base10_parse::<u8>() {
-                        Ok(b) => bytes.push(b),
-                        Err(_) => {
-                            return Err(syn::Error::new_spanned(
-                                n,
-                                "字节数组元素必须在 0..=255 范围内",
-                            ));
-                        }
-                    },
-                    other => {
-                        return Err(syn::Error::new_spanned(
-                            other,
-                            "字节数组只接受 0..=255 的整数字面量",
-                        ));
-                    }
-                }
-            }
-            Ok(bytes)
-        }
+        syn::Expr::Array(arr) => parse_byte_array_lit(&arr),
         other => Err(syn::Error::new_spanned(
             &other,
             "bN! 只接受字节串字面量 b\"...\" 或字节数组 [0x41, 66, ...]，不支持表达式",
@@ -515,18 +518,18 @@ pub(crate) fn parse_file(input: TokenStream2) -> syn::Result<Vec<u8>> {
     })
 }
 
-// ── `*_user!` 自定义档：`({ key: val, ... }, 载荷)` 统一前缀解析 ────────────
+// ── `({ ... }, 载荷)` 与 `({ ... }, { ... }, 载荷)` 通用花括号前缀解析骨架 ─────
 
 use crate::core::{TIER_BALANCED, TierParams};
 use proc_macro2::{Delimiter, TokenTree};
 use std::collections::HashSet;
 use std::ops::RangeInclusive;
-use syn::parse::{Parse, ParseStream};
+use syn::parse::{Parse, ParseStream, Parser};
 
 /// 解开 `macro_rules!` 元变量转发（`:literal` / `:expr`）产生的不可见 `None` 分组。
 ///
-/// 与 `unwrap_group` 不同：本函数作用于裸 `TokenTree`（`split_user_prefix` 需在
-/// `syn::Expr` 解析之前识别首参数的花括号分组，不能走 `syn::Expr` 入口）。
+/// 与 `unwrap_group` 不同：本函数作用于裸 `TokenTree`（花括号块前缀拆解需在
+/// `syn::Expr` 解析之前识别花括号分组，不能走 `syn::Expr` 入口）。
 fn unwrap_none_tt(mut tt: TokenTree) -> TokenTree {
     while let TokenTree::Group(g) = &tt {
         if g.delimiter() == Delimiter::None {
@@ -541,43 +544,19 @@ fn unwrap_none_tt(mut tt: TokenTree) -> TokenTree {
     tt
 }
 
-/// 提取所有 `*_user!` 宏的公共前缀：`({ key: val, ... }, <rest...>)` → `(TierParams, rest)`。
-///
-/// `s_fmt_user!` 直接使用返回的 `rest` 作为格式串与变长参数流（尾随逗号由
-/// `sfmt` 的 `FormatArgs` 语义处理）；其余单载荷宏通过 [`split_user_input`]
-/// 进一步剥离可选的末尾逗号。
-pub(crate) fn split_user_prefix(
-    input: TokenStream2,
+/// 校验花括号块之后的逗号 `,` 并收集剩余载荷 TokenStream。
+fn split_payload_after_brace(
+    mut iter: proc_macro2::token_stream::IntoIter,
     macro_name: &str,
-) -> syn::Result<(TierParams, TokenStream2)> {
-    let usage = format!("{macro_name}({{ key: val, ... }}, <字面量>)");
-    let mut iter = input.into_iter();
-    let Some(first) = iter.next() else {
-        return Err(syn::Error::new(
-            proc_macro2::Span::call_site(),
-            format!("{macro_name} 缺少参数，用法：{usage}"),
-        ));
-    };
-
-    let first = unwrap_none_tt(first);
-    let brace_group = match first {
-        TokenTree::Group(g) if g.delimiter() == Delimiter::Brace => g,
-        other => {
-            return Err(syn::Error::new_spanned(
-                other,
-                format!("{macro_name} 第一个参数必须是花括号配置块 `{{ key: val, ... }}`"),
-            ));
-        }
-    };
-
-    let tier = parse_tier_overrides(brace_group.stream(), brace_group.span())?;
-
+    block_name: &str,
+    usage: &str,
+) -> syn::Result<TokenStream2> {
     match iter.next() {
         Some(TokenTree::Punct(p)) if p.as_char() == ',' => {}
         Some(other) => {
             return Err(syn::Error::new_spanned(
                 other,
-                format!("{macro_name} 配置块 `{{ ... }}` 后缺少逗号 `,`"),
+                format!("{macro_name} {block_name} `{{ ... }}` 后缺少逗号 `,`"),
             ));
         }
         None => {
@@ -596,7 +575,118 @@ pub(crate) fn split_user_prefix(
         ));
     }
 
-    Ok((tier, rest))
+    Ok(rest)
+}
+
+/// 提取单花括号块前缀 `({ ... }, <rest...>)`，供 `*_user!` 与 `*_key!` 共用。
+fn split_braced_prefix<T>(
+    input: TokenStream2,
+    macro_name: &str,
+    block_name: &str,
+    block_syntax: &str,
+    usage: &str,
+    parse_block: impl FnOnce(TokenStream2, proc_macro2::Span) -> syn::Result<T>,
+) -> syn::Result<(T, TokenStream2)> {
+    let mut iter = input.into_iter();
+    let Some(first) = iter.next() else {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("{macro_name} 缺少参数，用法：{usage}"),
+        ));
+    };
+
+    let first = unwrap_none_tt(first);
+    let brace_group = match first {
+        TokenTree::Group(g) if g.delimiter() == Delimiter::Brace => g,
+        other => {
+            return Err(syn::Error::new_spanned(
+                other,
+                format!("{macro_name} 第一个参数必须是花括号{block_name} `{block_syntax}`"),
+            ));
+        }
+    };
+
+    let parsed = parse_block(brace_group.stream(), brace_group.span())?;
+    let rest = split_payload_after_brace(iter, macro_name, block_name, usage)?;
+    Ok((parsed, rest))
+}
+
+/// 剥离单载荷宏末尾可选的尾随逗号（如 `s_user!({ ... }, "hi",)`）。
+fn strip_trailing_comma(rest: TokenStream2) -> TokenStream2 {
+    let mut tokens: Vec<TokenTree> = rest.into_iter().collect();
+    if tokens.len() > 1
+        && let Some(TokenTree::Punct(p)) = tokens.last()
+        && p.as_char() == ','
+    {
+        tokens.pop();
+    }
+    tokens.into_iter().collect()
+}
+
+/// 解析花括号内 `key: val` 或 `key = val` 序列的通用骨架：统一处理重复键、分隔符与尾随逗号。
+fn parse_kv_fields(
+    stream: TokenStream2,
+    mut on_field: impl FnMut(&syn::Ident, &str, ParseStream) -> syn::Result<()>,
+    on_finish: impl FnOnce(&HashSet<String>, ParseStream) -> syn::Result<()>,
+) -> syn::Result<()> {
+    (|input: ParseStream| {
+        let mut seen = HashSet::new();
+
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            let key_str = key.to_string();
+
+            if !seen.insert(key_str.clone()) {
+                return Err(syn::Error::new_spanned(
+                    &key,
+                    format!("重复配置字段 `{key_str}`"),
+                ));
+            }
+
+            // 同时兼容 `key: val` 与 `key = val`
+            if input.peek(syn::Token![:]) {
+                input.parse::<syn::Token![:]>()?;
+            } else if input.peek(syn::Token![=]) {
+                input.parse::<syn::Token![=]>()?;
+            } else {
+                return Err(input.error("字段名后应为 `:` 或 `=`"));
+            }
+
+            on_field(&key, &key_str, input)?;
+
+            // 允许逗号分隔及尾随逗号
+            if input.peek(syn::Token![,]) {
+                input.parse::<syn::Token![,]>()?;
+            } else if !input.is_empty() {
+                return Err(input.error("配置项之间缺少逗号 `,`"));
+            }
+        }
+
+        on_finish(&seen, input)
+    })
+    .parse2(stream)
+}
+
+// ── `*_user!` 自定义档：`({ key: val, ... }, 载荷)` 解析 ─────────────────────
+
+/// 提取所有 `*_user!` 宏的公共前缀：`({ key: val, ... }, <rest...>)` → `(TierParams, rest)`。
+///
+/// `s_fmt_user!` 直接使用返回的 `rest` 作为格式串与变长参数流（尾随逗号由
+/// `sfmt` 的 `FormatArgs` 语义处理）；其余单载荷宏通过 [`split_user_input`]
+/// 进一步剥离可选的末尾逗号。
+pub(crate) fn split_user_prefix(
+    input: TokenStream2,
+    macro_name: &str,
+) -> syn::Result<(TierParams, TokenStream2)> {
+    let usage = format!("{macro_name}({{ key: val, ... }}, <字面量>)");
+    split_braced_prefix(
+        input,
+        macro_name,
+        "配置块",
+        "{ key: val, ... }",
+        &usage,
+        parse_tier_overrides,
+    )
 }
 
 /// 拆分单载荷宏 `*_user!({ <overrides> }, <payload> $(,)?)` 的顶层输入。
@@ -608,17 +698,7 @@ pub(crate) fn split_user_input(
     macro_name: &str,
 ) -> syn::Result<(TokenStream2, TierParams)> {
     let (tier, rest) = split_user_prefix(input, macro_name)?;
-    let mut tokens: Vec<TokenTree> = rest.into_iter().collect();
-
-    if tokens.len() > 1
-        && let Some(TokenTree::Punct(p)) = tokens.last()
-        && p.as_char() == ','
-    {
-        tokens.pop();
-    }
-
-    let payload: TokenStream2 = tokens.into_iter().collect();
-    Ok((payload, tier))
+    Ok((strip_trailing_comma(rest), tier))
 }
 
 /// 解析花括号内部的 `key: value` 或 `key = value` 序列，以 `TIER_BALANCED` 为底覆盖。
@@ -626,90 +706,62 @@ fn parse_tier_overrides(
     stream: TokenStream2,
     brace_span: proc_macro2::Span,
 ) -> syn::Result<TierParams> {
-    struct OverrideParser(TierParams);
+    let mut tier = TIER_BALANCED;
 
-    impl Parse for OverrideParser {
-        fn parse(input: ParseStream) -> syn::Result<Self> {
-            let mut tier = TIER_BALANCED;
-            let mut seen = HashSet::new();
-
-            while !input.is_empty() {
-                let key: syn::Ident = input.parse()?;
-                let key_str = key.to_string();
-
-                if !seen.insert(key_str.clone()) {
+    parse_kv_fields(
+        stream,
+        |key, key_str, input| {
+            match key_str {
+                "prefer_stack" => {
+                    tier.prefer_stack = input.parse::<syn::LitBool>()?.value();
+                }
+                "pad_short" => {
+                    tier.pad_short = input.parse::<syn::LitBool>()?.value();
+                }
+                "max_latency" => {
+                    tier.max_latency = parse_u8_field(input, "max_latency")?;
+                }
+                "min_security" => {
+                    tier.min_security = parse_u8_field(input, "min_security")?;
+                }
+                "security_factor" => {
+                    tier.security_factor = parse_f64_field(input, "security_factor")?;
+                }
+                "wrap_pct" => {
+                    tier.wrap_pct = parse_u8_field(input, "wrap_pct")?;
+                }
+                "junk_pct" => {
+                    tier.junk_pct = parse_u8_field(input, "junk_pct")?;
+                }
+                "cold_pct" => {
+                    tier.cold_pct = parse_u8_field(input, "cold_pct")?;
+                }
+                "anti_disasm_pct" => {
+                    tier.anti_disasm_pct = parse_u8_field(input, "anti_disasm_pct")?;
+                }
+                "anti_disasm_count_range" => {
+                    tier.anti_disasm_count_range =
+                        parse_u8_inclusive_range(input, "anti_disasm_count_range")?;
+                }
+                "anti_disasm_garbage_range" => {
+                    tier.anti_disasm_garbage_range =
+                        parse_u8_inclusive_range(input, "anti_disasm_garbage_range")?;
+                }
+                _ => {
                     return Err(syn::Error::new_spanned(
-                        &key,
-                        format!("重复配置字段 `{key_str}`"),
+                        key,
+                        format!(
+                            "未知的 TierParams 字段 `{key_str}`，可用字段：\
+                             prefer_stack, max_latency, min_security, security_factor, \
+                             wrap_pct, junk_pct, cold_pct, pad_short, anti_disasm_pct, \
+                             anti_disasm_count_range, anti_disasm_garbage_range"
+                        ),
                     ));
                 }
-
-                // 同时兼容 `key: val` 与 `key = val`
-                if input.peek(syn::Token![:]) {
-                    input.parse::<syn::Token![:]>()?;
-                } else if input.peek(syn::Token![=]) {
-                    input.parse::<syn::Token![=]>()?;
-                } else {
-                    return Err(input.error("字段名后应为 `:` 或 `=`"));
-                }
-
-                match key_str.as_str() {
-                    "prefer_stack" => {
-                        tier.prefer_stack = input.parse::<syn::LitBool>()?.value();
-                    }
-                    "pad_short" => {
-                        tier.pad_short = input.parse::<syn::LitBool>()?.value();
-                    }
-                    "max_latency" => {
-                        tier.max_latency = parse_u8_field(input, "max_latency")?;
-                    }
-                    "min_security" => {
-                        tier.min_security = parse_u8_field(input, "min_security")?;
-                    }
-                    "security_factor" => {
-                        tier.security_factor = parse_f64_field(input, "security_factor")?;
-                    }
-                    "wrap_pct" => {
-                        tier.wrap_pct = parse_u8_field(input, "wrap_pct")?;
-                    }
-                    "junk_pct" => {
-                        tier.junk_pct = parse_u8_field(input, "junk_pct")?;
-                    }
-                    "cold_pct" => {
-                        tier.cold_pct = parse_u8_field(input, "cold_pct")?;
-                    }
-                    "anti_disasm_pct" => {
-                        tier.anti_disasm_pct = parse_u8_field(input, "anti_disasm_pct")?;
-                    }
-                    "anti_disasm_count_range" => {
-                        tier.anti_disasm_count_range =
-                            parse_u8_inclusive_range(input, "anti_disasm_count_range")?;
-                    }
-                    "anti_disasm_garbage_range" => {
-                        tier.anti_disasm_garbage_range =
-                            parse_u8_inclusive_range(input, "anti_disasm_garbage_range")?;
-                    }
-                    _ => {
-                        return Err(syn::Error::new_spanned(
-                            &key,
-                            format!(
-                                "未知的 TierParams 字段 `{key_str}`，可用字段：\
-                                 prefer_stack, max_latency, min_security, security_factor, \
-                                 wrap_pct, junk_pct, cold_pct, pad_short, anti_disasm_pct, \
-                                 anti_disasm_count_range, anti_disasm_garbage_range"
-                            ),
-                        ));
-                    }
-                }
-
-                // 允许逗号分隔及尾随逗号
-                if input.peek(syn::Token![,]) {
-                    input.parse::<syn::Token![,]>()?;
-                } else if !input.is_empty() {
-                    return Err(input.error("配置项之间缺少逗号 `,`"));
-                }
             }
-
+            Ok(())
+        },
+        |seen, input| {
             // 反反汇编注入依赖 `anti-disassembly` 特性：未启用时相关配置是静默 no-op，
             // 显式配置只会造成误解，直接拒绝。
             if !cfg!(feature = "anti-disassembly")
@@ -719,12 +771,10 @@ fn parse_tier_overrides(
                     "当前构建未启用 anti-disassembly 特性，不能配置 anti_disasm_* 字段（请在 obfstr2 上启用默认特性后重试）",
                 ));
             }
+            Ok(())
+        },
+    )?;
 
-            Ok(OverrideParser(tier))
-        }
-    }
-
-    let OverrideParser(tier) = syn::parse2(stream)?;
     tier.validate()
         .map_err(|e| syn::Error::new(brace_span, e))?;
     Ok(tier)
@@ -792,44 +842,405 @@ fn parse_u8_inclusive_range(input: ParseStream, field: &str) -> syn::Result<Rang
     Ok(lo..=hi)
 }
 
-// ── 各类型的 `_user` 组合解析入口 ──────────────────────────────────────────
+// ── 动态密钥档：`*_key!` 与 `*_key_user!` 解析 ──────────────────────────────
 
-pub(crate) fn parse_str_user(input: TokenStream2) -> syn::Result<(String, TierParams)> {
-    let (payload, tier) = split_user_input(input, "s_user!")?;
-    Ok((parse_str(payload)?, tier))
+/// 解析后的双密钥配置：编译期加密密钥 + 运行期解密密钥表达式。
+#[derive(Clone)]
+pub(crate) struct KeyPair {
+    /// 编译期用于加密载荷的实际密钥字节（非空）。
+    pub(crate) build_key: Vec<u8>,
+    /// 若 `build_key` 来自 `env!("VAR")`，记录其环境变量名字面量。
+    ///
+    /// 代码发射层应生成 `const _: usize = ::core::env!(#var).len();` 以注册 Cargo
+    /// 环境变量依赖，避免生成 `&str` 常量导致密钥明文残留在 `.rodata` 段中。
+    pub(crate) build_key_env: Option<syn::LitStr>,
+    /// 运行期用于绑定 `let key: &[u8] = #run_key;` 的表达式（已拒绝字面量及字面量衍生形式）。
+    pub(crate) run_key: syn::Expr,
 }
 
-pub(crate) fn parse_bytes_user(input: TokenStream2) -> syn::Result<(Vec<u8>, TierParams)> {
-    let (payload, tier) = split_user_input(input, "b_user!")?;
-    Ok((parse_bytes(payload)?, tier))
+/// 提取 `*_key!` 宏的公共前缀：`({ build_key: ..., run_key: ... }, <rest...>)` → `(KeyPair, rest)`。
+pub(crate) fn split_key_prefix(
+    input: TokenStream2,
+    macro_name: &str,
+) -> syn::Result<(KeyPair, TokenStream2)> {
+    let usage =
+        format!("{macro_name}({{ build_key: \"...\", run_key: <运行期表达式> }}, <字面量>)");
+    split_braced_prefix(
+        input,
+        macro_name,
+        "密钥块",
+        "{ build_key: ..., run_key: ... }",
+        &usage,
+        |stream, span| parse_key_pair(stream, span, macro_name),
+    )
 }
 
-pub(crate) fn parse_file_user(input: TokenStream2) -> syn::Result<(Vec<u8>, TierParams)> {
-    let (payload, tier) = split_user_input(input, "f_user!")?;
-    Ok((parse_file(payload)?, tier))
+/// 拆分单载荷动态密钥宏 `*_key!({ build_key: ..., run_key: ... }, <payload> $(,)?)` 的顶层输入。
+pub(crate) fn split_key_input(
+    input: TokenStream2,
+    macro_name: &str,
+) -> syn::Result<(TokenStream2, KeyPair)> {
+    let (keys, rest) = split_key_prefix(input, macro_name)?;
+    Ok((strip_trailing_comma(rest), keys))
 }
 
-pub(crate) fn parse_int_user(input: TokenStream2) -> syn::Result<(ParsedInt, TierParams)> {
-    let (payload, tier) = split_user_input(input, "i_user!")?;
-    Ok((parse_int(payload)?, tier))
+/// 提取 `*_key_user!` 宏的双花括号前缀（密钥块在前，用户配置块在后）：
+///
+/// 同时兼容两种写法：
+/// - 逗号分隔：`macro!({ build_key: ..., run_key: ... }, { key: val, ... }, <rest...>)`
+/// - 紧邻花括号：`macro!({ build_key: ..., run_key: ... } { key: val, ... }, <rest...>)`
+pub(crate) fn split_key_user_prefix(
+    input: TokenStream2,
+    macro_name: &str,
+) -> syn::Result<(KeyPair, TierParams, TokenStream2)> {
+    let usage = format!(
+        "{macro_name}({{ build_key: \"...\", run_key: <运行期表达式> }}, {{ key: val, ... }}, <字面量>)"
+    );
+    let mut iter = input.into_iter();
+
+    // 1. 解析第一个花括号块：密钥配置 `{ build_key, run_key }`
+    let Some(first) = iter.next() else {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("{macro_name} 缺少参数，用法：{usage}"),
+        ));
+    };
+    let first = unwrap_none_tt(first);
+    let key_group = match first {
+        TokenTree::Group(g) if g.delimiter() == Delimiter::Brace => g,
+        other => {
+            return Err(syn::Error::new_spanned(
+                other,
+                format!(
+                    "{macro_name} 第一个参数必须是花括号密钥块 `{{ build_key: ..., run_key: ... }}`"
+                ),
+            ));
+        }
+    };
+    let keys = parse_key_pair(key_group.stream(), key_group.span(), macro_name)?;
+
+    // 2. 解析第二个花括号块：用户配置 `{ key: val, ... }`（允许两花括号之间带或不带逗号 `,`）
+    let Some(next_tt) = iter.next() else {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("{macro_name} 缺少配置块与载荷参数，用法：{usage}"),
+        ));
+    };
+    let second = match next_tt {
+        TokenTree::Punct(p) if p.as_char() == ',' => match iter.next() {
+            Some(tt) => unwrap_none_tt(tt),
+            None => {
+                return Err(syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!("{macro_name} 密钥块逗号后缺少配置块与载荷参数，用法：{usage}"),
+                ));
+            }
+        },
+        other => unwrap_none_tt(other),
+    };
+    let tier_group = match second {
+        TokenTree::Group(g) if g.delimiter() == Delimiter::Brace => g,
+        other => {
+            return Err(syn::Error::new_spanned(
+                other,
+                format!("{macro_name} 第二个参数必须是花括号配置块 `{{ key: val, ... }}`"),
+            ));
+        }
+    };
+    let tier = parse_tier_overrides(tier_group.stream(), tier_group.span())?;
+
+    // 3. 校验第二个花括号块后的逗号并提取载荷
+    let rest = split_payload_after_brace(iter, macro_name, "配置块", &usage)?;
+    Ok((keys, tier, rest))
 }
 
-pub(crate) fn parse_float_user(input: TokenStream2) -> syn::Result<(ParsedFloat, TierParams)> {
-    let (payload, tier) = split_user_input(input, "fl_user!")?;
-    Ok((parse_float(payload)?, tier))
+/// 拆分单载荷宏 `*_key_user!({ <keys> } $(,)? { <overrides> }, <payload> $(,)?)` 的顶层输入。
+///
+/// 返回 `(载荷 TokenStream, KeyPair, 覆盖后的 TierParams)`。
+pub(crate) fn split_key_user_input(
+    input: TokenStream2,
+    macro_name: &str,
+) -> syn::Result<(TokenStream2, KeyPair, TierParams)> {
+    let (keys, tier, rest) = split_key_user_prefix(input, macro_name)?;
+    Ok((strip_trailing_comma(rest), keys, tier))
 }
 
-pub(crate) fn parse_cstr_user(input: TokenStream2) -> syn::Result<(Vec<u8>, TierParams)> {
-    let (payload, tier) = split_user_input(input, "cs_user!")?;
-    Ok((parse_cstr(payload)?, tier))
+/// 解析花括号内部的 `build_key` 与 `run_key` 键值对。
+fn parse_key_pair(
+    stream: TokenStream2,
+    brace_span: proc_macro2::Span,
+    macro_name: &str,
+) -> syn::Result<KeyPair> {
+    let mut build_key = None;
+    let mut run_key = None;
+
+    parse_kv_fields(
+        stream,
+        |key, key_str, input| {
+            match key_str {
+                "build_key" => {
+                    let expr: syn::Expr = input.parse()?;
+                    build_key = Some(parse_build_key(expr)?);
+                }
+                "run_key" => {
+                    let expr: syn::Expr = input.parse()?;
+                    run_key = Some(validate_run_key(expr)?);
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        key,
+                        format!("未知的密钥配置字段 `{key_str}`，可用字段：build_key, run_key"),
+                    ));
+                }
+            }
+            Ok(())
+        },
+        |_seen, _input| Ok(()),
+    )?;
+
+    let Some((build_key, build_key_env)) = build_key else {
+        return Err(syn::Error::new(
+            brace_span,
+            format!("{macro_name} 缺少必填字段 `build_key`"),
+        ));
+    };
+    let Some(run_key) = run_key else {
+        return Err(syn::Error::new(
+            brace_span,
+            format!("{macro_name} 缺少必填字段 `run_key`"),
+        ));
+    };
+
+    Ok(KeyPair {
+        build_key,
+        build_key_env,
+        run_key,
+    })
 }
 
-pub(crate) fn parse_wstr_user(input: TokenStream2) -> syn::Result<(ParsedWide, TierParams)> {
-    let (payload, tier) = split_user_input(input, "w_user!")?;
-    Ok((parse_wstr(payload)?, tier))
+/// 解析 `build_key`：支持 `"..."`、`b"..."`、`[0x12, 0x34, ...]` 字节数组及 `env!("VAR")`。
+fn parse_build_key(expr: syn::Expr) -> syn::Result<(Vec<u8>, Option<syn::LitStr>)> {
+    let span = syn::spanned::Spanned::span(&expr);
+    let (bytes, env_lit) = match unwrap_group(expr) {
+        // 1. 字符串字面量 "..."
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(s),
+            ..
+        }) => (s.value().into_bytes(), None),
+
+        // 2. 字节串字面量 b"..."
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::ByteStr(b),
+            ..
+        }) => (b.value(), None),
+
+        // 3. 字节数组字面量 [0x12, 0x34, ...]
+        syn::Expr::Array(arr) => (parse_byte_array_lit(&arr)?, None),
+
+        // 4. 编译期环境变量宏 env!("VAR") 或 env!("VAR", "自定义错误")
+        syn::Expr::Macro(syn::ExprMacro { mac, .. }) if is_env_macro(&mac.path) => {
+            eval_env_macro(&mac)?
+        }
+
+        other => {
+            return Err(syn::Error::new_spanned(
+                &other,
+                "`build_key` 只接受字符串字面量 `\"...\"`、字节串字面量 `b\"...\"`、字节数组 `[0x12, ...]` 或 `env!(\"...\")`",
+            ));
+        }
+    };
+
+    if bytes.is_empty() {
+        return Err(syn::Error::new(span, "`build_key` 密钥内容不能为空"));
+    }
+
+    Ok((bytes, env_lit))
 }
 
-pub(crate) fn parse_cwstr_user(input: TokenStream2) -> syn::Result<(ParsedCWide, TierParams)> {
-    let (payload, tier) = split_user_input(input, "cw_user!")?;
-    Ok((parse_cwstr(payload)?, tier))
+/// 判断宏路径是否为 `env!` / `std::env!` / `core::env!`。
+fn is_env_macro(path: &syn::Path) -> bool {
+    if path.is_ident("env") {
+        return true;
+    }
+    let mut iter = path.segments.iter();
+    if let (Some(first), Some(second), None) = (iter.next(), iter.next(), iter.next()) {
+        return (first.ident == "std" || first.ident == "core") && second.ident == "env";
+    }
+    false
+}
+
+/// 在过程宏阶段求值 `env!("VAR" [, "err_msg"])`。
+fn eval_env_macro(mac: &syn::Macro) -> syn::Result<(Vec<u8>, Option<syn::LitStr>)> {
+    struct EnvArgs {
+        var_lit: syn::LitStr,
+        custom_err: Option<syn::LitStr>,
+    }
+
+    impl Parse for EnvArgs {
+        fn parse(input: ParseStream) -> syn::Result<Self> {
+            let var_lit: syn::LitStr = input.parse().map_err(|_| {
+                input.error("`env!` 第一个参数必须是环境变量名字符串字面量，如 `env!(\"OBF_KEY\")`")
+            })?;
+            let mut custom_err = None;
+            if input.peek(syn::Token![,]) {
+                input.parse::<syn::Token![,]>()?;
+                if !input.is_empty() {
+                    custom_err = Some(input.parse::<syn::LitStr>().map_err(|_| {
+                        input.error("`env!` 第二个参数（自定义错误提示）必须是字符串字面量")
+                    })?);
+                    if input.peek(syn::Token![,]) {
+                        input.parse::<syn::Token![,]>()?;
+                    }
+                }
+            }
+            if !input.is_empty() {
+                return Err(input.error("`env!` 参数过多，最多接受 2 个参数"));
+            }
+            Ok(EnvArgs {
+                var_lit,
+                custom_err,
+            })
+        }
+    }
+
+    let args: EnvArgs = mac.parse_body()?;
+    let var_name = args.var_lit.value();
+
+    match std::env::var(&var_name) {
+        Ok(val) => Ok((val.into_bytes(), Some(args.var_lit))),
+        Err(_) => {
+            let msg = match args.custom_err {
+                Some(custom) => custom.value(),
+                None => format!(
+                    "编译期未找到环境变量 `{var_name}`（由 `build_key: env!({var_name:?})` 请求）"
+                ),
+            };
+            Err(syn::Error::new_spanned(mac, msg))
+        }
+    }
+}
+
+/// 校验 `run_key`：必须能绑定至 `let key: &[u8] = #run_key;`，且严禁编译期字面量写法。
+fn validate_run_key(expr: syn::Expr) -> syn::Result<syn::Expr> {
+    let expr = unwrap_group(expr);
+    if is_compile_time_literal_key(&expr) {
+        return Err(syn::Error::new_spanned(
+            &expr,
+            "`run_key` 不能为字面量或编译期常量表达式（否则密钥仍会硬编码进二进制，违背动态密钥威胁模型）；\
+             请传入运行期变量或表达式（类型需满足 `&[u8]`，如 `&server_key` 或 `get_key()`）",
+        ));
+    }
+    Ok(expr)
+}
+
+/// 递归检测表达式是否在编译期退化为硬编码字面量。
+///
+/// 穿透引用、切片、纯视图方法调用、括号、数组、代码块、分支及常量宏，
+/// 防止 `b"key"`、`"key".as_bytes()`、`&[0x12, 0x34]`、`&b"key"[..]`、`env!(...)` 等硬编码形式混入。
+fn is_compile_time_literal_key(expr: &syn::Expr) -> bool {
+    match unwrap_group_ref(expr) {
+        syn::Expr::Lit(_) => true,
+
+        syn::Expr::Array(arr) => {
+            !arr.elems.is_empty() && arr.elems.iter().all(is_compile_time_literal_key)
+        }
+        syn::Expr::Repeat(rep) => is_compile_time_literal_key(&rep.expr),
+
+        syn::Expr::Reference(r) => is_compile_time_literal_key(&r.expr),
+        syn::Expr::Index(idx) => is_compile_time_literal_key(&idx.expr),
+        syn::Expr::Paren(p) => is_compile_time_literal_key(&p.expr),
+        syn::Expr::Cast(c) => is_compile_time_literal_key(&c.expr),
+
+        syn::Expr::MethodCall(m) => {
+            let method = m.method.to_string();
+            let is_view_or_conv = matches!(
+                method.as_str(),
+                "as_bytes"
+                    | "as_slice"
+                    | "as_ref"
+                    | "as_mut_slice"
+                    | "into_bytes"
+                    | "to_vec"
+                    | "to_owned"
+                    | "clone"
+                    | "trim"
+                    | "trim_ascii"
+                    | "repeat"
+            );
+            is_view_or_conv && is_compile_time_literal_key(&m.receiver)
+        }
+
+        syn::Expr::Block(b) => matches!(
+            b.block.stmts.last(),
+            Some(syn::Stmt::Expr(tail, None)) if is_compile_time_literal_key(tail)
+        ),
+
+        syn::Expr::If(i) => {
+            let then_is_lit = matches!(
+                i.then_branch.stmts.last(),
+                Some(syn::Stmt::Expr(tail, None)) if is_compile_time_literal_key(tail)
+            );
+            let else_is_lit = i
+                .else_branch
+                .as_ref()
+                .is_some_and(|(_, e)| is_compile_time_literal_key(e));
+            then_is_lit || else_is_lit
+        }
+        syn::Expr::Match(m) => m
+            .arms
+            .iter()
+            .any(|arm| is_compile_time_literal_key(&arm.body)),
+
+        syn::Expr::Call(c) => match unwrap_group_ref(&c.func) {
+            syn::Expr::Closure(cl) => is_compile_time_literal_key(&cl.body),
+            // `(|| b"key")()`：`syn` 将带括号的闭包保留为 `Expr::Paren`
+            syn::Expr::Paren(p) => matches!(
+                unwrap_group_ref(&p.expr),
+                syn::Expr::Closure(cl) if is_compile_time_literal_key(&cl.body)
+            ),
+            _ => false,
+        },
+
+        syn::Expr::Macro(m) => {
+            let last_ident = m.mac.path.segments.last().map(|s| s.ident.to_string());
+            matches!(
+                last_ident.as_deref(),
+                Some("env" | "option_env" | "include_bytes" | "include_str" | "concat")
+            )
+        }
+
+        _ => false,
+    }
+}
+
+macro_rules! def_combined_parsers {
+    ($(($user_fn:ident, $user_mac:literal, $key_fn:ident, $key_user_fn:ident, $key_user_mac:literal, $parse_fn:ident -> $ret:ty)),* $(,)?) => {
+        $(
+            pub(crate) fn $user_fn(input: TokenStream2) -> syn::Result<($ret, TierParams)> {
+                let (payload, tier) = split_user_input(input, $user_mac)?;
+                Ok(($parse_fn(payload)?, tier))
+            }
+
+            pub(crate) fn $key_fn(input: TokenStream2, macro_name: &str) -> syn::Result<($ret, KeyPair)> {
+                let (payload, keys) = split_key_input(input, macro_name)?;
+                Ok(($parse_fn(payload)?, keys))
+            }
+
+            pub(crate) fn $key_user_fn(input: TokenStream2) -> syn::Result<($ret, KeyPair, TierParams)> {
+                let (payload, keys, tier) = split_key_user_input(input, $key_user_mac)?;
+                Ok(($parse_fn(payload)?, keys, tier))
+            }
+        )*
+    };
+}
+
+def_combined_parsers! {
+    (parse_str_user,   "s_user!",  parse_str_key,   parse_str_key_user,   "s_key_user!",  parse_str   -> String),
+    (parse_bytes_user, "b_user!",  parse_bytes_key, parse_bytes_key_user, "b_key_user!",  parse_bytes -> Vec<u8>),
+    (parse_file_user,  "f_user!",  parse_file_key,  parse_file_key_user,  "f_key_user!",  parse_file  -> Vec<u8>),
+    (parse_int_user,   "i_user!",  parse_int_key,   parse_int_key_user,   "i_key_user!",  parse_int   -> ParsedInt),
+    (parse_float_user, "fl_user!", parse_float_key, parse_float_key_user, "fl_key_user!", parse_float -> ParsedFloat),
+    (parse_cstr_user,  "cs_user!", parse_cstr_key,  parse_cstr_key_user,  "cs_key_user!", parse_cstr  -> Vec<u8>),
+    (parse_wstr_user,  "w_user!",  parse_wstr_key,  parse_wstr_key_user,  "w_key_user!",  parse_wstr  -> ParsedWide),
+    (parse_cwstr_user, "cw_user!", parse_cwstr_key, parse_cwstr_key_user, "cw_key_user!", parse_cwstr -> ParsedCWide),
 }

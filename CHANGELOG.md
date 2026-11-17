@@ -10,6 +10,23 @@
 
 ---
 
+## [0.5.0] - 2026-11-17
+
+### Added
+- 新增动态密钥档宏家族（实验性）：`s_key!` / `b_key!` / `f_key!` / `s_fmt_key!` / `i_key!` / `fl_key!` / `cs_key!` / `w_key!` / `cw_key!`，以及对应的 `*_key_user!` 自定义档变体。统一为 `({ build_key: ..., run_key: ... }, 载荷)`；`build_key` 支持字符串 / 字节串 / 字节数组 / `env!("VAR")`（编译期读取并注册 Cargo 环境依赖），`run_key` 必须是运行期 `&[u8]` 表达式，字面量与编译期常量形式被拒绝
+- 动态密钥绑定：编译期以 `LightHasher::hash(build_key)` 混入初始 `ghost_state`，运行期以 `run_key` 重建同一状态。错误 `run_key` 下的未定义行为为有意的反模拟 / 符号 / 切片执行设计
+- `lib-unknown` 升级至 `=0.5.0`（两个 crate 均精确锁定），启用 `hash-core` 特性；根 crate 重导出 `lib_unknown::hash`
+
+### Changed
+- 初始 chunk 密钥改为经入口 `ghost_state` 异或掩码存储（运行期 `black_box` 还原）：适用于全部宏家族，确保单层分块也强依赖全局状态，无法被单独抠出模拟
+- `ghost_state` 推进由"主容器末字节加法"改为"末尾最多 16 字节滑动窗口的 `LightHasher` 异或"，编译期 `sim_tail` 镜像同步
+- `gen_integrity_check` 重写为四类数学不透明谓词（MBA + `inv_mul64` 逆元对偶、汉明重量容斥、2-adic 奇数不动点、德摩根对称差重组），谓词仍与运行期 `ghost_state` / 数据指针耦合
+- 解析层重构：抽出 `*_user!` / `*_key!` / `*_key_user!` 共用的花括号前缀切分与 `key: val` 字段解析骨架（`split_braced_prefix` / `parse_kv_fields`），并以 `def_combined_parsers!` 批量生成八类载荷的 `*_user` / `*_key` / `*_key_user` 组合解析入口；混淆内核 `b_full` 收敛为带可选动态密钥的 `b_full_keyed`
+- 测试：新增 `obfstr2-macros/src/tests/key.rs`（`build_key` 字面量 / `env!` 形态、`run_key` 编译期形式拒绝与运行期形式放行、双花括号前缀切分）；smoke / nostd 增补 `*_key!` 家族端到端 roundtrip；`tests/compile_fail.rs` 由逐用例独立编译重构为常量表驱动的 `dny_run_batch_use_cache` 批量执行（预热并复用编译缓存）；`tests/nostd.rs` 将四份近同构裸机模板（字节 / 整数 / 浮点 / 宽字节链路）合并为单一 `[[main_body]]` 占位模板，13 个独立 `#[test]` 按 `default-features` 依赖配置收敛为 2 个批量入口，用例覆盖范围不变
+- 文档：README / README_en 新增动态密钥档章节与宏表条目，"自定义档"更名为"自定义强度档"，栈预算说明补充分块中间容器 `STACK_BUDGET / 2` 上限
+
+---
+
 ## [0.4.4] - 2026-11-16
 
 ### Added
@@ -124,7 +141,8 @@
 - 引入现代对称密码学设计要素（SPN、动态 S 盒 / P 盒、ARX、雪崩效应）以对抗 `angr` 等符号执行工具
 - 字符串 / 字节 / CStr 容器在离开作用域时执行 Volatile 擦除
 
-[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.1...v0.4.2
