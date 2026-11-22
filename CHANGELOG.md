@@ -12,6 +12,11 @@
 
 ## [Unreleased]
 
+### Added
+- 根 crate 重导出 `lib-unknown` 的轻量常量隐藏原语：`const_random!`（编译期伪随机整数，支持 `()` / `(Type)` / `(Type, "salt")` 三种形式）、`hide_array!`（XOR 掩码数组隐藏，`const fn` 可用）、`hide_array_lazy!`（`LazyLock` 延迟还原）以及 `lazy` 模块（`no_std` 版 `LazyLock` / `OnceLock`）。上述原语混淆强度低、开销低，仅作辅助工具，敏感常量请使用 obfstr2 原生宏
+- `lib-unknown` 依赖显式启用 `lazy` 特性（此前经 `crypto-core` / `hash-core` 间接启用），使 `hide_array_lazy!` 与 `lazy` 再导出的特性来源明确，避免上游特性图调整后静默失效
+- 测试：`tests/smoke.rs` 新增 `test_lib_unknown`，覆盖 `const_random!` 三种形式的 const 求值、`hide_array!` 的 `u8` / `u128` 取值往返，以及 `hide_array_lazy!` 的表达式与 `static` 条目两种调用形式
+
 ### Fixed
 - 测试：`tests/user.rs` 将 `anti_disasm_*` 字段覆盖从 `override_all_field_types_and_trailing_comma` 拆分至独立的 `#[cfg(feature = "anti-disassembly")]` 测试，修复默认特性下 `cargo test -p obfstr2-macros` 因特性门控拒绝显式配置而误报失败的问题
 

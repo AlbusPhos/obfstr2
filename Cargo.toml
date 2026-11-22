@@ -17,7 +17,7 @@ categories = ["no-std", "embedded"]
 
 [dependencies]
 obfstr2-macros = { version = "=0.5.0", path = "obfstr2-macros" }
-lib-unknown = { version = "=0.5.0", default-features = false, features = ["crypto", "types", "encoding", "hash-core"] }
+lib-unknown = { version = "=0.5.0", default-features = false, features = ["crypto", "types", "encoding", "hash-core", "lazy"] }
 anti-disassembly = { version = "0.1.0", optional = true, features = ["red-zone-safety"] }
 
 [features]

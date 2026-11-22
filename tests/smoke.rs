@@ -718,3 +718,42 @@ fn key_build_key_from_env_roundtrip() {
     );
     assert_eq!(&*s, "env-keyed");
 }
+
+#[test]
+fn test_lib_unknown() {
+    // `const_random!` 再导出的 const 上下文可用性：覆盖三种调用形式。
+    const RAND_U64: u64 = obfstr2::const_random!();
+    const RAND_U128: u128 = obfstr2::const_random!(u128);
+    const RAND_U16_SALTED: u16 = obfstr2::const_random!(u16, "obfstr2-smoke");
+
+    // 值由构建种子派生，此处仅校验类型宽度与 const 求值成功。
+    assert_eq!(RAND_U64.count_ones() + RAND_U64.count_zeros(), u64::BITS);
+    assert_eq!(RAND_U128.count_ones() + RAND_U128.count_zeros(), u128::BITS);
+    assert_eq!(
+        RAND_U16_SALTED.count_ones() + RAND_U16_SALTED.count_zeros(),
+        u16::BITS
+    );
+
+    let [a, b, c] = obfstr2::hide_array!(u8, [1, 2, 3]);
+    assert_eq!(a, 1);
+    assert_eq!(b, 2);
+    assert_eq!(c, 3);
+
+    let [a, b, c] = obfstr2::hide_array!(u128, [u128::MAX, u128::MIN, 0xfffffff333]);
+    assert_eq!(a, u128::MAX);
+    assert_eq!(b, u128::MIN);
+    assert_eq!(c, 0xfffffff333);
+
+    static C: obfstr2::lazy::LazyLock<[u128; 3]> =
+        obfstr2::hide_array_lazy!(u128, [u128::MAX, u128::MIN, 0xfffffff333]);
+    let [a, b, c] = *C;
+    assert_eq!(a, u128::MAX);
+    assert_eq!(b, u128::MIN);
+    assert_eq!(c, 0xfffffff333);
+
+    obfstr2::hide_array_lazy!(static D : u64 = [u64::MAX, 0xfffffff333, 1111]);
+    let [a, b, c] = *D;
+    assert_eq!(a, u64::MAX);
+    assert_eq!(b, 0xfffffff333);
+    assert_eq!(c, 1111);
+}

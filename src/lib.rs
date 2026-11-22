@@ -21,6 +21,22 @@ pub use lib_unknown::types;
 #[cfg(feature = "anti-disassembly")]
 pub use anti_disassembly::anti_disassembly;
 
+/// 重导出 `lib_unknown::const_random`，在编译期生成由构建种子、调用位置与环境共同派生的伪随机整数。
+///
+/// 支持 `const_random!()`（默认 `u64`）、`const_random!(Type)` 与
+/// `const_random!(Type, "salt")` 三种形式，结果可用于 `const` / `static` 初始化。
+pub use lib_unknown::const_random;
+/// 重导出 `lib_unknown::hide_array`，提供 `const fn` 可用的快速常量隐藏。
+///
+/// 混淆强度低，开销低。敏感常量请使用 obfstr2 原生宏。
+pub use lib_unknown::hide_array;
+/// 重导出 `lib_unknown::hide_array_lazy`，提供 `LazyLock` 包裹的快速常量隐藏。
+///
+/// 混淆强度低，开销低。敏感常量请使用 obfstr2 原生宏。
+pub use lib_unknown::hide_array_lazy;
+/// 重导出 `lib_unknown::lazy`，提供 `no_std` 可用的 `LazyLock` / `OnceLock`，方便视情况减少热路径开销。
+pub use lib_unknown::lazy;
+
 /// 内部过程宏实现库的重导出。
 #[doc(hidden)]
 pub extern crate obfstr2_macros;

@@ -262,6 +262,33 @@ fn main() {
 - `run_key` 必须是运行期表达式（`&[u8]`），字面量 / `as_bytes()` / `env!` 等编译期常量形式会被拒绝；
 - `run_key` 必须与 `build_key` 逐字节一致；不一致时输出未定义，并可能触发解密链的完整性擦除（**有意的对抗设计**，用于污染模拟 / 符号 / 切片执行状态）；
 
+### 轻量辅助原语
+
+除原生混淆宏外，根 crate 还重导出了 `lib-unknown` 的轻量常量工具，适合**非敏感**常量与热路径降开销场景：
+
+| 项目               | 说明                                                                                        |
+|:-------------------|:--------------------------------------------------------------------------------------------|
+| `const_random!`    | 编译期伪随机整数，支持 `()`（`u64`）、`(Type)`、`(Type, "salt")`；可用于 `const` / `static` |
+| `hide_array!`      | XOR 掩码数组隐藏，`const fn` 可用，求值即还原                                               |
+| `hide_array_lazy!` | 以 `LazyLock` 包裹 `hide_array!`，首次访问才还原                                            |
+| `lazy`             | `no_std` 版 `LazyLock` / `OnceLock`                                                         |
+
+```rust
+use obfstr2::{const_random, hide_array, hide_array_lazy, lazy};
+
+const SALT: u64 = const_random!(u64, "demo");
+static TABLE: lazy::LazyLock<[u32; 4]> = hide_array_lazy!(u32, [1, 2, 3, 4]);
+
+fn main() {
+    let [a, b, c] = hide_array!(u8, [1, 2, 3]);
+    assert_eq!((a, b, c), (1, 2, 3));
+    assert_eq!(TABLE[0], 1);
+    let _ = SALT;
+}
+```
+
+> **强度提示：** 上述原语仅做简单掩码与 `black_box` 还原，防护强度远低于 obfstr2 原生多态加密宏。密钥、URL、系统调用名等敏感常量请始终使用 `s1!` ~ `s3!` 等原生宏。
+
 ---
 
 ## 特性标志

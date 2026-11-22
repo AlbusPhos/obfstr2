@@ -262,6 +262,33 @@ fn main() {
 - `run_key` must be a runtime expression evaluating to `&[u8]`; compile-time constant forms such as literals, `.as_bytes()` on literals, or `env!` are rejected at compile time;
 - `run_key` must match `build_key` byte-for-byte at runtime; mismatches produce undefined output and may trigger integrity self-wiping along the decryption chain (**an intentional adversarial design** to poison emulated, symbolic, or sliced execution states).
 
+### Lightweight Helper Primitives
+
+Besides the native obfuscation macros, the root crate re-exports `lib-unknown`'s lightweight constant utilities for **non-sensitive** constants and hot-path overhead reduction:
+
+| Item               | Description                                                                                                             |
+|:-------------------|:------------------------------------------------------------------------------------------------------------------------|
+| `const_random!`    | Compile-time pseudo-random integer; supports `()` (`u64`), `(Type)`, and `(Type, "salt")`; usable in `const` / `static` |
+| `hide_array!`      | XOR-masked array hiding, usable in `const fn`; restored on evaluation                                                   |
+| `hide_array_lazy!` | Wraps `hide_array!` in a `LazyLock`, restored on first access                                                           |
+| `lazy`             | `no_std` `LazyLock` / `OnceLock`                                                                                        |
+
+```rust
+use obfstr2::{const_random, hide_array, hide_array_lazy, lazy};
+
+const SALT: u64 = const_random!(u64, "demo");
+static TABLE: lazy::LazyLock<[u32; 4]> = hide_array_lazy!(u32, [1, 2, 3, 4]);
+
+fn main() {
+    let [a, b, c] = hide_array!(u8, [1, 2, 3]);
+    assert_eq!((a, b, c), (1, 2, 3));
+    assert_eq!(TABLE[0], 1);
+    let _ = SALT;
+}
+```
+
+> **Strength note:** These primitives only apply simple masking with `black_box` restoration and are far weaker than obfstr2's native polymorphic encryption macros. Always use native macros such as `s1!` ~ `s3!` for sensitive constants (keys, URLs, syscall names, etc.).
+
 ---
 
 ## Feature Flags
