@@ -10,7 +10,7 @@
 
 ---
 
-## [Unreleased]
+## [0.5.1] - 2026-11-22
 
 ### Added
 - 根 crate 重导出 `lib-unknown` 的轻量常量隐藏原语：`const_random!`（编译期伪随机整数，支持 `()` / `(Type)` / `(Type, "salt")` 三种形式）、`hide_array!`（XOR 掩码数组隐藏，`const fn` 可用）、`hide_array_lazy!`（`LazyLock` 延迟还原）以及 `lazy` 模块（`no_std` 版 `LazyLock` / `OnceLock`）。上述原语混淆强度低、开销低，仅作辅助工具，敏感常量请使用 obfstr2 原生宏
@@ -153,7 +153,8 @@
 - 引入现代对称密码学设计要素（SPN、动态 S 盒 / P 盒、ARX、雪崩效应）以对抗 `angr` 等符号执行工具
 - 字符串 / 字节 / CStr 容器在离开作用域时执行 Volatile 擦除
 
-[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/AlbusPhos/obfstr2/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.2...v0.4.3
