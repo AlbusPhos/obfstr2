@@ -91,17 +91,14 @@ While traditional compile-time obfuscation crates bypass `strings` and generic t
 
 Leveraging polymorphic primitive pipelines, cross-block ghost-state coupling, and call-graph shattering, `obfstr2` completely neutralizes `rust-deobf`'s static extraction and Unicorn emulation:
 
-1. **Production Showcase ([`examples/showcase.rs`](examples/showcase.rs))**: Zero macro-protected payload strings were recovered (**0 decoded**). The deobfuscator only extracted standard library internal lookup-table noise.
-2. **Automated Adversarial Test Suite ([`tests/rust_deobf.rs`](tests/rust_deobf.rs))**: Implanted with 5 realistic IOC categories matching `rust-deobf`'s benchmark suite (URL, IP:Port, Mutex, File Path, Registry Key). Baseline `obfstr` was cracked **5/5 within 0.1s**. In contrast, under `obfstr2::s2`, the function call graph fragmented (expanding from 14 to 452 functions), emulation time inflated by ~80x, and **0/5 strings were recovered (100% immune)**.
-
-| Obfuscation Solution / Tool                    |    `strings`    |     `FLOSS`     | [`rust-deobf`](https://github.com/VAHPEM/rust-deobf) | Reverse Engineering & Deobfuscation Assessment                                      |
-|:-----------------------------------------------|:---------------:|:---------------:|:----------------------------------------------------:|:------------------------------------------------------------------------------------|
-| `litcrypt` / `litcrypt2`                       |      0 / 5      |      0 / 5      |                  **5 / 5 (Broken)**                  | ❌ Obvious static byte XOR patterns                                                 |
-| `obfstr` (inlined XOR+ADD)                     |      0 / 5      |      0 / 5      |                  **5 / 5 (Broken)**                  | ❌ Fixed inline pattern; easily unwound via emulation                               |
-| `cryptify` (default key)                       |      0 / 5      |      0 / 5      |                  **5 / 5 (Broken)**                  | ❌ Static routine signature and predictable key layout                              |
-| `muddy` (ChaCha20-Poly1305)                    |      0 / 5      |      0 / 5      |                  **5 / 5 (Broken)**                  | ❌ Standard crypto constants and AEAD calls easily recognized                       |
-| Manual compact stack strings / XOR / ADD       |      0 / 5      |      0 / 5      |                  **5 / 5 (Broken)**                  | ❌ Lacks control-flow barriers and cross-block state coupling                       |
-| **`obfstr2` (`tests/rust_deobf.rs` verified)** | **0 recovered** | **0 recovered** |           **0 recovered (Full Immunity)**            | ✅ **Non-standard polymorphic primitives + avalanche ratchet + vtable trampolines** |
+| Obfuscation Solution / Tool                                           |    `strings`    |     `FLOSS`     | [`rust-deobf`](https://github.com/VAHPEM/rust-deobf) | Reverse Engineering & Deobfuscation Assessment                                      |
+|:----------------------------------------------------------------------|:---------------:|:---------------:|:----------------------------------------------------:|:------------------------------------------------------------------------------------|
+| `litcrypt` / `litcrypt2`                                              |      0 / 5      |      0 / 5      |                  **5 / 5 (Broken)**                  | ❌ Obvious static byte XOR patterns                                                 |
+| `obfstr` (inlined XOR+ADD)                                            |      0 / 5      |      0 / 5      |                  **5 / 5 (Broken)**                  | ❌ Fixed inline pattern; easily unwound via emulation                               |
+| `cryptify` (default key)                                              |      0 / 5      |      0 / 5      |                  **5 / 5 (Broken)**                  | ❌ Static routine signature and predictable key layout                              |
+| `muddy` (ChaCha20-Poly1305)                                           |      0 / 5      |      0 / 5      |                  **5 / 5 (Broken)**                  | ❌ Standard crypto constants and AEAD calls easily recognized                       |
+| Manual compact stack strings / XOR / ADD                              |      0 / 5      |      0 / 5      |                  **5 / 5 (Broken)**                  | ❌ Lacks control-flow barriers and cross-block state coupling                       |
+| **`obfstr2` ([`tests/rust_deobf.rs`](tests/rust_deobf.rs) verified)** | **0 recovered** | **0 recovered** |           **0 recovered (Full Immunity)**            | ✅ **Non-standard polymorphic primitives + avalanche ratchet + vtable trampolines** |
 
 *Note: The first 5 baseline rows cite [`rust-deobf`'s official benchmark suite](https://github.com/VAHPEM/rust-deobf).*
 
