@@ -118,7 +118,7 @@ Leveraging polymorphic primitive pipelines, cross-block ghost-state coupling, an
 ### 2. Inverse Key Ratchet & Cascade Avalanche Coupling
 Eliminates independent per-layer keys in the binary, enforcing a bidirectional coupling chain between compile-time forward encryption and runtime reverse decryption:
 - **Zero-Storage Key Ratchet ($\pmod{2^{64}}$ Modular Inverse)**: Each chunk stores only a single root key (masked at compile time by the entry `ghost_state`). Multi-layer encryption uses a 64-bit odd modular multiplicative inverse combined with the current layer's trailing byte to deduce the outer layer key; runtime decryption walks this forward:
-  $$K _ {\text{next}} = (K _ {\text{cur}} + \text{ghost\_state}) \times (\text{last\_byte} \mid 1) \pmod{2^{64}}$$
+  $$K _ {\text{next}} = (K _ {\text{cur}} + \text{ghost\\_state}) \times (\text{last\\_byte} \mid 1) \pmod{2^{64}}$$
 - **Cross-Block Ghost State (`ghost_state`)**: After each chunk is decrypted and merged into the destination container, a sliding window of up to 16 bytes is hashed via `LightHasher` to mutate the global `ghost_state` (incorporating key hashes when dynamic keys are used). Any attempt to skip precursory chunks, patch bytes in memory, or simulate isolated functions in a debugger triggers an avalanche failure across all subsequent keys.
 
 ### 3. Superlinear Chunking, Realistic Chaff Blocks, & Opaque Predicates
@@ -150,7 +150,7 @@ To disrupt linear-sweep and recursive disassemblers, target-gated inline assembl
 ### Core Principles
 1. **White-Box Threat Model**: Standard cryptography guarantees security under black-box assumptions. In white-box environments where the adversary controls binary execution, standard constants (e.g., ChaCha20 magic words) are quickly harvested by automated scripts. `obfstr2` aims to **maximize human cognitive friction and automated solver runtimes**, forcing attackers to reverse-engineer non-standard polymorphic logic.
 2. **Complementary Probabilistic Security Metric**: Layer selection is dynamically determined by latency constraints and a target security threshold (`min_security`), sampling and stacking primitives (scaled via `security_factor`):
-   $$\text{Security} _ {\text{combined}} = 1 - \prod _ {i=1}^{k} \left(1 - \frac{\text{Security} _ i}{100}\right) \ge \text{min\_security}$$
+   $$\text{Security} _ {\text{combined}} = 1 - \prod _ {i=1}^{k} \left(1 - \frac{\text{Security} _ i}{100}\right) \ge \text{min\\_security}$$
 3. **Decoupled Registries & Periodic Rotation**: Primitives and storage strategies are isolated into static registries. The orchestrator purely handles the "chunk $\to$ encrypt $\to$ store $\to$ fold $\to$ emit" pipeline. Maintainers rotate underlying algorithms and dummy signatures to stay ahead of automated heuristics.
 4. **Compile-Time Verification with Zero-Cost Runtime Guarantees**: Procedural macros validate all states, alignments, and lengths during compilation; runtime code uses `unwrap_unchecked` to eliminate unnecessary branch checks.
 

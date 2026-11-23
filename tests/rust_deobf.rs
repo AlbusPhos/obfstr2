@@ -113,11 +113,7 @@ extern "C" fn _start() -> ! {
 }
 "#;
 
-fn run_with_timeout(
-    program: &Path,
-    args: &[&str],
-    timeout: Duration,
-) -> std::io::Result<Output> {
+fn run_with_timeout(program: &Path, args: &[&str], timeout: Duration) -> std::io::Result<Output> {
     let mut child = Command::new(program)
         .args(args)
         .stdout(Stdio::piped())
