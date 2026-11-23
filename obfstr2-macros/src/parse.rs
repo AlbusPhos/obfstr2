@@ -701,17 +701,55 @@ pub(crate) fn split_user_input(
     Ok((strip_trailing_comma(rest), tier))
 }
 
+/// 解析 `Option<bool>` 字段：同时兼容 `true` / `false` 与 `Some(true)` / `Some(false)` / `None`。
+fn parse_opt_bool_field(input: ParseStream, field: &str) -> syn::Result<Option<bool>> {
+    if input.peek(syn::LitBool) {
+        return Ok(Some(input.parse::<syn::LitBool>()?.value()));
+    }
+    if input.peek(syn::Ident) {
+        let ident: syn::Ident = input.parse()?;
+        if ident == "None" {
+            return Ok(None);
+        }
+        if ident == "Some" {
+            let content;
+            syn::parenthesized!(content in input);
+            let b: syn::LitBool = content.parse().map_err(|_| {
+                content.error(format!(
+                    "`{field}` 的 `Some(...)` 内需要布尔字面量 `true` 或 `false`"
+                ))
+            })?;
+            if !content.is_empty() {
+                return Err(content.error("`Some(...)` 内包含多余 token"));
+            }
+            return Ok(Some(b.value()));
+        }
+    }
+    Err(input.error(format!(
+        "`{field}` 需要布尔字面量 `true` / `false`（或 `Some(bool)` / `None`）"
+    )))
+}
+
 /// 解析花括号内部的 `key: value` 或 `key = value` 序列，以 `TIER_BALANCED` 为底覆盖。
 fn parse_tier_overrides(
     stream: TokenStream2,
     brace_span: proc_macro2::Span,
 ) -> syn::Result<TierParams> {
     let mut tier = TIER_BALANCED;
-
     parse_kv_fields(
         stream,
         |key, key_str, input| {
             match key_str {
+                "force_heap" => {
+                    let v = parse_opt_bool_field(input, "force_heap")?;
+                    if !cfg!(feature = "alloc") && v == Some(true) {
+                        return Err(syn::Error::new_spanned(
+                            key,
+                            "当前构建未启用 alloc 特性，不能配置 `force_heap: true`（请启用 alloc 特性后重试）",
+                        ));
+                    }
+                    tier.force_heap = v;
+                }
                 "prefer_stack" => {
                     tier.prefer_stack = input.parse::<syn::LitBool>()?.value();
                 }
@@ -752,7 +790,7 @@ fn parse_tier_overrides(
                         key,
                         format!(
                             "未知的 TierParams 字段 `{key_str}`，可用字段：\
-                             prefer_stack, max_latency, min_security, security_factor, \
+                             prefer_stack, force_heap, max_latency, min_security, security_factor, \
                              wrap_pct, junk_pct, cold_pct, pad_short, anti_disasm_pct, \
                              anti_disasm_count_range, anti_disasm_garbage_range"
                         ),
@@ -774,7 +812,6 @@ fn parse_tier_overrides(
             Ok(())
         },
     )?;
-
     tier.validate()
         .map_err(|e| syn::Error::new(brace_span, e))?;
     Ok(tier)

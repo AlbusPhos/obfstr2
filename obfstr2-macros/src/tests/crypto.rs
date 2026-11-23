@@ -14,7 +14,7 @@ use quote::{format_ident, quote};
 use std::env;
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,20 +23,16 @@ use std::time::{Duration, Instant};
 #[allow(clippy::expect_used)]
 fn mse2_primitive_roundtrip() {
     use lib_unknown::crypto::mse2::{imse2, mse2};
-
     let key = 0xDEAD_BEEF_CAFE_BABE_u64;
     for len in [1usize, 8, 15, 16, 63, 64, 65, 255] {
         let mut plaintext = vec![0u8; len];
         fill_bytes(plaintext.as_mut());
-
         let mut ciphertext = vec![0u8; len + 64];
         let ct_len = mse2(&plaintext, &mut ciphertext, key, 0x1122_3344)
             .expect("mse2 encryption should succeed");
-
         let mut decrypted = vec![0u8; len];
         let pt_len = imse2(&ciphertext[..ct_len], &mut decrypted, key, 0x1122_3344)
             .expect("mse2 decryption should succeed");
-
         assert_eq!(pt_len, len);
         assert_eq!(decrypted, plaintext);
     }
@@ -46,17 +42,14 @@ fn mse2_primitive_roundtrip() {
 #[allow(clippy::expect_used)]
 fn chacha20_primitive_roundtrip() {
     use lib_unknown::crypto::chacha20::chacha20_1;
-
     let key = 0x0123_4567_89AB_CDEF_u64;
     let nonce = 0xA5u8;
     for len in [1usize, 8, 64, 255] {
         let mut plaintext = vec![0u8; len];
         fill_bytes(plaintext.as_mut());
-
         let mut buf = plaintext.clone();
         chacha20_1(&mut buf, key, nonce).expect("chacha20 encryption should succeed");
         assert_ne!(buf, plaintext);
-
         chacha20_1(&mut buf, key, nonce).expect("chacha20 decryption should succeed");
         assert_eq!(buf, plaintext);
     }
@@ -66,14 +59,12 @@ fn chacha20_primitive_roundtrip() {
 #[allow(clippy::expect_used)]
 fn dynamic_box_inversion_roundtrip() {
     use lib_unknown::crypto::core::{boxs, mix};
-
     for seed in [0u64, 1, 0xDEAD_BEEF, u64::MAX] {
         let s = boxs::gen_s(mix::mix64(seed));
         let s_inv = boxs::inv_s(&s).expect("generated s-box must be invertible");
         for x in 0..=u8::MAX {
             assert_eq!(boxs::s8(boxs::s8(x, &s), &s_inv), x);
         }
-
         let p = boxs::gen_p(mix::mix64(seed));
         let p_inv = boxs::inv_p(&p).expect("generated p-box must be invertible");
         for x in 0..=u8::MAX {
@@ -111,7 +102,6 @@ fn test_cryptos_latency() {
     let sample_sizes = &[0, 1, 8, 15, 32, 127, 128, 512, 1024, 2047];
     const ROUNDS: usize = 10;
     const BENCH_ITERS: usize = 1000;
-
     // 权重配置：Run 50%, Size 30%, Build 20%
     const WEIGHT_RUN: f64 = 0.50;
     const WEIGHT_SIZE: f64 = 0.30;
@@ -119,7 +109,6 @@ fn test_cryptos_latency() {
 
     let num_cryptos = CRYPTOS.len();
     let num_samples = sample_sizes.len();
-
     let mut raw_data: Vec<Vec<Vec<MetricRecord>>> =
         vec![vec![Vec::with_capacity(ROUNDS); num_samples]; num_cryptos];
 
@@ -133,7 +122,6 @@ fn test_cryptos_latency() {
             ">>> [Round {:02}/{:02}] 正在采集全量原语测试数据...",
             round, ROUNDS
         );
-
         for (sample_idx, &sample_size) in sample_sizes.iter().enumerate() {
             let mut data = vec![0u8; sample_size];
             if sample_size > 0 {
@@ -141,7 +129,6 @@ fn test_cryptos_latency() {
             }
 
             let crypto_indices: Vec<usize> = shuffle((0..num_cryptos).collect());
-
             'c: for &c_idx in &crypto_indices {
                 let crypto = &CRYPTOS[c_idx];
                 if !(crypto.support)(sample_size) {
@@ -151,7 +138,6 @@ fn test_cryptos_latency() {
                 let mut d = data.clone();
                 let key = random::<u64>();
                 let iv = random::<u8>();
-
                 let mut ctx = LayerCtx {
                     type_path: quote!(::obfstr2::types::buffer::HeapBytes),
                     key,
@@ -161,6 +147,7 @@ fn test_cryptos_latency() {
                     out_size: d.len(),
                     ident_tag: "".to_string(),
                 };
+
                 d = (crypto.enc)(&mut ctx, d);
                 assert_eq!(d.len(), ctx.out_size);
                 assert_eq!(data.len(), ctx.in_size);
@@ -171,6 +158,7 @@ fn test_cryptos_latency() {
                     &d,
                 )
                 .to_string();
+
                 let (dec, ident) = (crypto.dec)(&ctx, format_ident!("d"));
 
                 let main = format!(
@@ -214,6 +202,7 @@ fn test_cryptos_latency() {
                         pure_run_ms = ns as f64 / 1_000_000.0;
                     }
                 }
+
                 assert_eq!(
                     actual_hex, expected_hex,
                     "原语 [{}] 解密明文与原始明文不匹配!",
@@ -281,7 +270,6 @@ fn test_cryptos_latency() {
         let valid_stats: Vec<&AggregatedStat> = (0..num_cryptos)
             .filter_map(|c| agg_matrix[c][s_idx].as_ref())
             .collect();
-
         if valid_stats.is_empty() {
             continue;
         }
@@ -318,7 +306,6 @@ fn test_cryptos_latency() {
                 let n_size = norm(stat.med_size, min_size, max_size);
                 let n_run = norm((stat.med_run + 1.0).ln(), min_run_log, max_run_log);
                 let n_build = norm(stat.med_build, min_build, max_build);
-
                 let composite_score =
                     n_run * WEIGHT_RUN + n_size * WEIGHT_SIZE + n_build * WEIGHT_BUILD;
                 // 全程保留 f64 精度，映射到 1.0 ..= 100.0 区间
@@ -348,7 +335,6 @@ fn test_cryptos_latency() {
             "Calibrated Score"
         );
         println!("{:-^115}", "");
-
         for (c_idx, crypto) in CRYPTOS.iter().enumerate() {
             if let Some(stat) = &agg_matrix[c_idx][sample_idx] {
                 println!(
@@ -393,7 +379,6 @@ fn test_cryptos_latency() {
         print!("{:<15} | {:<8}", crypto.name, crypto.latency);
         let mut sum_score = 0.0;
         let mut valid_samples = 0;
-
         for s_idx in 0..num_samples {
             if let Some(stat) = &agg_matrix[c_idx][s_idx] {
                 let sc = stat.calibrated_score;
@@ -404,7 +389,6 @@ fn test_cryptos_latency() {
                 print!(" | \x1b[90m{:<9}\x1b[0m", "N/A");
             }
         }
-
         if valid_samples > 0 {
             let final_rec = (sum_score / valid_samples as f64).round() as u8;
             println!(" | \x1b[1;32m{:<9}\x1b[0m", final_rec);
@@ -420,17 +404,13 @@ const ANGR_RUST_TEMPLATE: &str = r#"
 #![no_main]
 #![allow(unsafe_code)]
 #![allow(unused)]
-
 use core::arch::asm;
-
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     sys_exit(101)
 }
-
 #[no_mangle]
 pub extern "C" fn rust_eh_personality() {}
-
 #[inline(always)]
 unsafe fn syscall1(n: usize, a1: usize) -> isize {
     let ret: isize;
@@ -447,7 +427,6 @@ unsafe fn syscall1(n: usize, a1: usize) -> isize {
     }
     ret
 }
-
 #[inline(always)]
 unsafe fn syscall3(n: usize, a1: usize, a2: usize, a3: usize) -> isize {
     let ret: isize;
@@ -466,20 +445,16 @@ unsafe fn syscall3(n: usize, a1: usize, a2: usize, a3: usize) -> isize {
     }
     ret
 }
-
 fn sys_write(buf: &[u8]) {
     unsafe { syscall3(1, 1, buf.as_ptr() as usize, buf.len()); }
 }
-
 fn sys_read(buf: &mut [u8]) -> isize {
     unsafe { syscall3(0, 0, buf.as_mut_ptr() as usize, buf.len()) }
 }
-
 fn sys_exit(code: usize) -> ! {
     unsafe { syscall1(60, code); }
     loop {}
 }
-
 fn env_found(envp: *const *const u8, name: &[u8]) -> bool {
     let mut i = 0;
     loop {
@@ -493,7 +468,6 @@ fn env_found(envp: *const *const u8, name: &[u8]) -> bool {
         i += 1;
     }
 }
-
 fn print_hex(mut v: usize) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut buf = [0u8; 16];
@@ -509,29 +483,24 @@ fn print_hex(mut v: usize) {
     sys_write(&buf[i..16]);
     sys_write(b"\n");
 }
-
 #[cold]
 #[inline(never)]
 fn ok() -> ! {
     sys_write(b"ok\n");
     sys_exit(0);
 }
-
 #[cold]
 #[inline(never)]
 fn err() -> ! {
     sys_write(b"err\n");
     sys_exit(1);
 }
-
 fn main(sp: *const usize) -> ! {
     let base = _start as usize;
     print_hex((ok as usize).wrapping_sub(base));
     print_hex((err as usize).wrapping_sub(base));
-
     let argc = unsafe { *sp };
     let envp = unsafe { sp.add(argc as usize + 2) } as *const *const u8;
-
     if env_found(envp, b"aaaaaaaaaaaa") {
         let mut input = [0u8; [[len]]];
         sys_read(&mut input);
@@ -546,7 +515,6 @@ fn main(sp: *const usize) -> ! {
     }
     sys_exit(0)
 }
-
 #[no_mangle]
 #[unsafe(naked)]
 extern "C" fn _start() -> ! {
@@ -567,22 +535,17 @@ const ANGR_PY_TEMPLATE: &str = r#"
 import angr
 import sys
 import time
-
 t0 = time.perf_counter()
 project = angr.Project(r"[[bin]]", auto_load_libs=False)
-
 base = project.entry
 ok_addr = base + [[ok]]
 err_addr = base + [[err]]
-
 initial_state = project.factory.entry_state(
     env={"aaaaaaaaaaaa": "1111"},
 )
-
 simgr = project.factory.simgr(initial_state)
 simgr.explore(find=ok_addr, avoid=err_addr)
 elapsed = time.perf_counter() - t0
-
 if simgr.found:
     found_state = simgr.found[0]
     stdin_sol = found_state.posix.dumps(0)
@@ -594,14 +557,13 @@ else:
     sys.exit(1)
 "#;
 
-fn run_py_with_timeout(python: &str, code: &str, timeout: Duration) -> std::io::Result<Output> {
+fn run_py_with_timeout(python: &Path, code: &str, timeout: Duration) -> std::io::Result<Output> {
     let mut child = Command::new(python)
         .args(["-c", code])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("aaaaaaaaaaaa", "1111")
         .spawn()?;
-
     let mut stdout = child
         .stdout
         .take()
@@ -624,7 +586,6 @@ fn run_py_with_timeout(python: &str, code: &str, timeout: Duration) -> std::io::
 
     let start = Instant::now();
     let mut timed_out = false;
-
     let status = loop {
         match child.try_wait()? {
             Some(status) => break status,
@@ -663,7 +624,6 @@ fn parse_offsets(stdout: &str) -> (String, String) {
         .map(|s| s.trim())
         .filter(|s| s.starts_with("0x"))
         .collect();
-
     assert!(
         lines.len() >= 2,
         "未能从输出中解析出 ok/err 的偏移地址:\n{}",
@@ -675,7 +635,7 @@ fn parse_offsets(stdout: &str) -> (String, String) {
 /// 返回 `(是否被破解, 有效抗符号执行秒数)`
 /// 若超时或求解失败（NOT_FOUND），秒数直接记为 `timeout_secs as f64`
 fn eval_with_angr(
-    python: &str,
+    python: &Path,
     bin: &Path,
     ok_offset: &str,
     err_offset: &str,
@@ -686,14 +646,12 @@ fn eval_with_angr(
         .replace("[[bin]]", &bin.to_string_lossy())
         .replace("[[ok]]", ok_offset)
         .replace("[[err]]", err_offset);
-
     let start = Instant::now();
     let out = match run_py_with_timeout(python, &py_code, Duration::from_secs(timeout_secs)) {
         Ok(out) => out,
         Err(e) => panic!("调用 python angr 进程失败: {e}"),
     };
     let wall_secs = start.elapsed().as_secs_f64().min(timeout_secs as f64);
-
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut py_secs: Option<f64> = None;
     let mut found_hex: Option<String> = None;
@@ -733,17 +691,21 @@ struct SecurityAggStat {
 }
 
 #[test]
-#[ignore = "需要python angr环境，执行CRYPTOS的security校准测试"]
+#[ignore = "需要 python angr 环境 (VIRTUAL_ENV)，执行 CRYPTOS 的 security 校准测试"]
 #[allow(clippy::needless_range_loop)]
 fn test_cryptos_security() {
-    let python = if let Ok(py) = env::var("ANGR_PYTHONPATH") {
+    let python: PathBuf = if let Ok(venv) = env::var("VIRTUAL_ENV") {
+        let py = Path::new(&venv).join("bin").join("python");
         let out = match run_py_with_timeout(
             &py,
             "import angr; print(ord('哈') + (1 + 3/5))",
             Duration::from_secs(15),
         ) {
             Ok(out) => out,
-            Err(e) => panic!("无法启动 ANGR_PYTHONPATH 指定的解释器: {e}"),
+            Err(e) => panic!(
+                "无法启动 VIRTUAL_ENV 指定的 Python 解释器 ({}): {e}",
+                py.display()
+            ),
         };
         if !out.status.success() {
             panic!(
@@ -758,7 +720,7 @@ fn test_cryptos_security() {
         }
         py
     } else {
-        panic!("需要设置含 angr 的 ANGR_PYTHONPATH 环境变量");
+        panic!("需要设置含 angr 的 VIRTUAL_ENV 环境变量");
     };
 
     let sample_sizes: &[usize] = &[1, 3, 5, 16, 43, 128];
@@ -769,13 +731,11 @@ fn test_cryptos_security() {
 
     const ANGR_TIMEOUT_SECS: u64 = 30;
     const ROUNDS: usize = 3;
-
     // 权重配置：angr时间 35%, cognitive_load 27%, attack_complexity 20%, latency 18%
     const WEIGHT_ANGR: f64 = 0.35;
     const WEIGHT_COG: f64 = 0.27;
     const WEIGHT_ATT: f64 = 0.20;
     const WEIGHT_LAT: f64 = 0.18;
-
     // 扣除 Python/angr 固定启动底噪 (0.15s)
     const ANGR_BASE_OVERHEAD: f64 = 0.15;
     // 最终整体缩放系数，预留编排层多原语叠加空间
@@ -795,7 +755,6 @@ fn test_cryptos_security() {
         r#"
 [build]
 target = "x86_64-unknown-none"
-
 [target.x86_64-unknown-none]
 rustflags = [
     "-C", "panic=abort",
@@ -805,7 +764,6 @@ rustflags = [
 ]
 "#,
     );
-
     let init_ret = runner.build(Some(Duration::from_secs(20)));
     assert!(
         init_ret.ok,
@@ -814,7 +772,6 @@ rustflags = [
 
     let num_cryptos = CRYPTOS.len();
     let num_samples = sample_sizes.len();
-
     let mut raw_data: Vec<Vec<Vec<SecurityRecord>>> =
         vec![vec![Vec::with_capacity(ROUNDS); num_samples]; num_cryptos];
 
@@ -828,7 +785,6 @@ rustflags = [
             ">>> [Round {:02}/{:02}] 正在采集全量原语符号执行与静态指标数据...",
             round, ROUNDS
         );
-
         // 记录本轮在小样本下已达到 ANGR_TIMEOUT_SECS 的原语（记录触发时的样本长度）
         let mut timed_out_at_len: Vec<Option<usize>> = vec![None; num_cryptos];
 
@@ -840,7 +796,6 @@ rustflags = [
             let expected_hex: String = data.iter().map(|b| format!("{:02x}", b)).collect();
 
             let crypto_indices: Vec<usize> = shuffle((0..num_cryptos).collect());
-
             'c: for &c_idx in &crypto_indices {
                 let crypto = &CRYPTOS[c_idx];
                 if !(crypto.support)(sample_size) {
@@ -863,7 +818,6 @@ rustflags = [
                 let mut d = data.clone();
                 let key = random::<u64>();
                 let iv = random::<u8>();
-
                 let mut ctx = LayerCtx {
                     type_path: quote!(::obfstr2::types::buffer::StackBytes),
                     key,
@@ -873,6 +827,7 @@ rustflags = [
                     out_size: d.len(),
                     ident_tag: "0".to_string(),
                 };
+
                 d = (crypto.enc)(&mut ctx, d);
                 assert_eq!(d.len(), ctx.out_size);
                 assert_eq!(data.len(), ctx.in_size);
@@ -883,6 +838,7 @@ rustflags = [
                     &d,
                 )
                 .to_string();
+
                 let (dec, ident) = (crypto.dec)(&ctx, format_ident!("d"));
 
                 let code = ANGR_RUST_TEMPLATE
@@ -902,7 +858,6 @@ rustflags = [
 
                 let (ok_off, err_off) = parse_offsets(&ret.stdout);
                 let bin_path = runner.bin_path();
-
                 let (cracked, angr_secs) = eval_with_angr(
                     &python,
                     &bin_path,
@@ -923,7 +878,6 @@ rustflags = [
                     if cracked { "CRACKED" } else { "DEFENDED" },
                     angr_secs
                 );
-
                 raw_data[c_idx][sample_idx].push(SecurityRecord { cracked, angr_secs });
             }
         }
@@ -979,7 +933,6 @@ rustflags = [
         let valid_indices: Vec<usize> = (0..num_cryptos)
             .filter(|&c| agg_matrix[c][s_idx].is_some())
             .collect();
-
         if valid_indices.is_empty() {
             continue;
         }
@@ -1026,7 +979,6 @@ rustflags = [
             if let Some(stat) = &mut agg_matrix[c_idx][s_idx] {
                 let crypto = &CRYPTOS[c_idx];
                 let m = &crypto.metrics;
-
                 let n_angr = if (max_angr_log - min_angr_log).abs() <= f64::EPSILON
                     && stat.med_angr_secs >= ANGR_TIMEOUT_SECS as f64
                 {
@@ -1042,7 +994,6 @@ rustflags = [
                     + n_cog * WEIGHT_COG
                     + n_att * WEIGHT_ATT
                     + n_lat * WEIGHT_LAT;
-
                 stat.calibrated_score = composite_score * 99.0 + 1.0;
             }
         }
@@ -1070,7 +1021,6 @@ rustflags = [
             "Calibrated Sec"
         );
         println!("{:-^110}", "");
-
         for (c_idx, crypto) in CRYPTOS.iter().enumerate() {
             if let Some(stat) = &agg_matrix[c_idx][sample_idx] {
                 let cracked_str = format!("{}/{}", stat.cracked_count, stat.total_runs);
@@ -1124,7 +1074,6 @@ rustflags = [
         print!("{:<15} | {:<8}", crypto.name, crypto.security);
         let mut sum_score = 0.0;
         let mut valid_samples = 0;
-
         for s_idx in 0..num_samples {
             if let Some(stat) = &agg_matrix[c_idx][s_idx] {
                 let sc = stat.calibrated_score * COEFFICIENT;
@@ -1135,7 +1084,6 @@ rustflags = [
                 print!(" | \x1b[90m{:<9}\x1b[0m", "N/A");
             }
         }
-
         if valid_samples > 0 {
             let final_rec = (sum_score / valid_samples as f64).round().clamp(1.0, 100.0) as u8;
             println!(" | \x1b[1;32m{:<9}\x1b[0m", final_rec);

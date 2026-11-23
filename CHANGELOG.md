@@ -10,6 +10,20 @@
 
 ---
 
+## [0.5.2] - 2026-11-23
+
+### Added
+- 新增互斥的容器路由强制特性：`force_heap`（隐含启用 `alloc`）强制各容器宏的主容器使用堆容器（`Heap*`），`force_stack` 强制主容器使用栈容器（`Stack*`）；强制策略仅作用于主容器，分块中间容器仍按 `STACK_BUDGET / 2` 预算与 `prefer_stack` 启发式路由，`force_stack` 超预算时仍在编译期报错。根 crate 与 `obfstr2-macros` 的对应特性逐层转发，同时启用两者会在编译期触发断言失败
+- `TierParams` 新增 `force_heap: Option<bool>` 字段（`*_user!` / `*_key_user!` 新配置键 `force_heap`）：`true` / `Some(true)` 强制堆，`false` / `Some(false)` 强制栈，`None` 继承特性或默认启发式；优先级为 `*_user!` 配置 > Cargo 特性 > 默认启发式。`false` 表示强制走栈而非关闭强制堆；未启用 `alloc` 时配置 `true` / `Some(true)` 会在编译期被拒绝
+- 测试：`tests/smoke.rs` 新增容器类型矩阵，覆盖默认启发式、`force_heap` / `force_stack` 特性、`*_user!` 与 `*_key_user!` 的逐调用强制路由，以 `TypeId` 与类型名校验精确容器类型及容量 `N`，并补充 0B / 16B 边界与 64B 长载荷；`obfstr2-macros/src/tests/user.rs` 新增 `force_heap` 配置解析、`Some(...)` / `None` 形式与非法值拒绝测试
+- 添加[rust_deobf.rs](tests/rust_deobf.rs)测试，验证保护能力。
+### Changed
+- 构建与 CI：`force_heap` / `force_stack` 互斥，`--all-features` 会同时启用二者并在编译期失败；CI / 发布流程与 README 检查命令改为显式特性组合（`alloc,anti-disassembly` 及 `force_heap` / `force_stack` 的互斥组合），并引入 `cargo-hack` 对 `alloc` / `force_heap` / `force_stack` / `budget-4m` 做特性幂集 smoke 测试；`actions/checkout` 升级至 `v7`
+- 文档：两个 crate 新增 docs.rs 构建元数据，显式启用 `alloc` 与 `anti-disassembly`，避免 `--all-features` 互斥导致 docs.rs 构建失败；同时启用 `docsrs` 门控的 `doc_cfg` 特性开关
+- 文档：README / README_en 特性表新增 `force_heap` / `force_stack` 与互斥说明，堆栈路由提示补充强制路由仅作用于主容器及 `force_stack` 预算报错，`TierParams` 表新增 `force_heap` 行，并更新快速开始 / 纯栈示例的依赖版本与显式 clippy 特性组合
+
+---
+
 ## [0.5.1] - 2026-11-22
 
 ### Added
@@ -153,7 +167,8 @@
 - 引入现代对称密码学设计要素（SPN、动态 S 盒 / P 盒、ARX、雪崩效应）以对抗 `angr` 等符号执行工具
 - 字符串 / 字节 / CStr 容器在离开作用域时执行 Volatile 擦除
 
-[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/AlbusPhos/obfstr2/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/AlbusPhos/obfstr2/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.3...v0.4.4

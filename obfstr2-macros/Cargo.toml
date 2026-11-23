@@ -1,6 +1,6 @@
 [package]
 name = "obfstr2-macros"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 resolver = "2"
 rust-version = "1.92"
@@ -41,3 +41,10 @@ budget-512k = []
 budget-1m = []
 budget-4m = []
 budget-8m = []
+
+force_heap = ["alloc"]
+force_stack = []
+
+[package.metadata.docs.rs]
+features = ["alloc", "anti-disassembly"]
+rustdoc-args = ["--cfg", "docsrs"]

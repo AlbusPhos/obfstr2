@@ -5,6 +5,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #![doc = include_str!("../README.md")]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(clippy::needless_doctest_main)]
 #![no_std]
 /// 重导出 `lib_unknown::crypto`，提供运行时解密与密码学原语。
@@ -630,6 +631,7 @@ macro_rules! w3 {
 /// | 键 | 取值 | 说明 |
 /// |---|---|---|
 /// | `prefer_stack` | `bool` | 堆 / 栈掷币的栈偏好概率 |
+/// | `force_heap` | `true` / `false` / `Some(bool)` / `None` | 主容器强制路由：`true` 堆、`false` 栈、`None` 继承特性与默认启发式；仅主容器生效 |
 /// | `max_latency` | `u8`（≥ 2） | 单层延迟上限 |
 /// | `min_security` | `u8`（≤ 99） | 组合安全度下限（乘法累积，达到即停） |
 /// | `security_factor` | `f64`（> 0.0 的有限值） | 单层安全度缩放系数：`< 1.0` 折减单层贡献（层数更多），`> 1.0` 放大（层数更少） |
@@ -640,6 +642,9 @@ macro_rules! w3 {
 /// | `anti_disasm_pct` | `0..=100` | 反反汇编注入概率（需启用 `anti-disassembly` 特性） |
 /// | `anti_disasm_count_range` | `lo..=hi`（u8） | 反反汇编块数随机区间 |
 /// | `anti_disasm_garbage_range` | `lo..=hi`（u8） | 反反汇编垃圾字节基准随机区间 |
+///
+/// `force_heap` 的优先级为：`*_user!` 配置 > Cargo 特性（`force_heap` / `force_stack`）> 默认启发式；
+/// `false` 表示强制走栈，而非关闭强制堆。分块中间容器始终按预算与 `prefer_stack` 启发式路由。
 ///
 /// # Warning
 ///

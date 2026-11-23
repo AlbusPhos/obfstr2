@@ -44,41 +44,86 @@ pub(crate) const STACK_BUDGET: usize = if cfg!(feature = "budget-8m") {
     4 * 1024 // 默认值放在最后
 };
 
+const _: () = const {
+    assert!(
+        cfg!(feature = "force_heap") as u8 + cfg!(feature = "force_stack") as u8 <= 1,
+        "不能够同时启用force_heap和force_stack特性"
+    );
+};
+
 /// 主容器（`is_main = true`）或 chunk 中间容器（`false`）的堆 / 栈统一判定。
 ///
-/// `alloc` 关闭时超预算直接报错（纯栈模式，`no_std` 主路径）；开启时
-/// ≤16 B 恒栈、达到预算（主容器 `STACK_BUDGET` / 中间容器一半）恒堆，
-/// 其间按 `prefer_stack` 掷币。
-pub(crate) fn use_heap(size: usize, is_main: bool, prefer_stack: bool) -> Result<bool, String> {
+/// 主容器优先级：`force_heap (TierParams)` > `feature (force_heap / force_stack)` > 默认启发式。
+pub(crate) fn use_heap(
+    size: usize,
+    is_main: bool,
+    prefer_stack: bool,
+    force_heap: Option<bool>,
+) -> Result<bool, String> {
     let budget = STACK_BUDGET / if is_main { 1 } else { 2 };
-    if cfg!(feature = "alloc") {
-        if size <= 16 {
-            Ok(false)
-        } else {
-            if size >= budget {
-                Ok(true)
-            } else {
-                if random_bool(if prefer_stack { 0.76 } else { 0.4 }) {
-                    Ok(false)
+
+    // 仅对主容器（is_main = true）解析强制堆栈策略
+    let effective_force_heap: Option<bool> = if is_main {
+        match force_heap {
+            Some(v) => Some(v), // 1. TierParams (_user 档) 优先级最高
+            None => {
+                if cfg!(feature = "force_heap") {
+                    Some(true)
+                } else if cfg!(feature = "force_stack") {
+                    Some(false)
                 } else {
-                    Ok(true)
+                    None
                 }
             }
         }
     } else {
-        if size >= budget {
-            Err(format!(
-                "容器需要 {size}B，超过栈预算 {budget}B（总上限 {STACK_BUDGET}B）且无堆可用"
-            ))
+        None
+    };
+
+    // 若命中强制策略，直接裁决
+    if let Some(force) = effective_force_heap {
+        return if force {
+            if !cfg!(feature = "alloc") {
+                Err("主容器强制走堆（force_heap = true），但当前未启用 `alloc` 特性".to_string())
+            } else {
+                Ok(true) // 无视 ≤16B 恒栈规则与随机掷币，强制走堆
+            }
         } else {
+            // 强制走栈：仍受 STACK_BUDGET 保护以防栈溢出（如需超预算走栈可调大 budget-* 特性）
+            if size >= budget {
+                Err(format!(
+                    "主容器需要 {size}B，超过栈预算 {budget}B（总上限 {STACK_BUDGET}B），无法强制走栈"
+                ))
+            } else {
+                Ok(false)
+            }
+        };
+    }
+
+    // 3. 默认启发式逻辑
+    if cfg!(feature = "alloc") {
+        if size <= 16 {
             Ok(false)
+        } else if size >= budget {
+            Ok(true)
+        } else if random_bool(if prefer_stack { 0.76 } else { 0.4 }) {
+            Ok(false)
+        } else {
+            Ok(true)
         }
+    } else if size >= budget {
+        Err(format!(
+            "容器需要 {size}B，超过栈预算 {budget}B（总上限 {STACK_BUDGET}B）且无堆可用"
+        ))
+    } else {
+        Ok(false)
     }
 }
 
 /// 强度档位公共参数（延迟上限 / 组合安全度下限 / 逐层非内联包装概率 / 短块预填充 / 堆栈偏好 / 反反汇编注入参数）。
 #[derive(Clone)]
 pub(crate) struct TierParams {
+    pub(crate) force_heap: Option<bool>,
     pub(crate) prefer_stack: bool,
     pub(crate) max_latency: u8,
     pub(crate) min_security: u8,
@@ -148,6 +193,7 @@ impl TierParams {
 
 /// 低延迟档（`s1` / `b1` / `i1` / `fl1` / `cs1`）：栈偏好（`alloc` 下掷币 76% 栈），`no_std` 可用。
 pub(crate) const TIER_LOW: TierParams = TierParams {
+    force_heap: None,
     prefer_stack: true,
     max_latency: 30,
     min_security: 7,
@@ -163,6 +209,7 @@ pub(crate) const TIER_LOW: TierParams = TierParams {
 
 /// 均衡档（`s2` / `b2` / `i2` / `fl2` / `cs2`）：堆栈随机（`alloc` 下 >16B 载荷 60% 走堆）。
 pub(crate) const TIER_BALANCED: TierParams = TierParams {
+    force_heap: None,
     prefer_stack: false,
     max_latency: 80,
     min_security: 63,
@@ -178,6 +225,7 @@ pub(crate) const TIER_BALANCED: TierParams = TierParams {
 
 /// 高强度档（`s3` / `b3` / `i3` / `fl3` / `cs3`）：`alloc` 下主容器堆偏好（60% 走堆，≤16B 恒栈）。
 pub(crate) const TIER_HIGH: TierParams = TierParams {
+    force_heap: None,
     prefer_stack: false,
     max_latency: 100,
     min_security: 93,
@@ -890,14 +938,14 @@ pub(crate) fn build_obfuscated_bytes(
     let ghost_state = format_ident!("__ghost_state_{id}");
 
     let chunk_type_path = |peak: usize| -> Result<TokenStream2, String> {
-        if use_heap(peak, false, tier.prefer_stack)? {
+        if use_heap(peak, false, tier.prefer_stack, None)? {
             Ok(quote!(::obfstr2::types::buffer::HeapBytes))
         } else {
             Ok(quote!(::obfstr2::types::buffer::StackBytes))
         }
     };
 
-    let main_is_heap = use_heap(size, true, tier.prefer_stack)?;
+    let main_is_heap = use_heap(size, true, tier.prefer_stack, tier.force_heap)?;
     let main_type_path = if main_is_heap {
         quote!(::obfstr2::types::buffer::HeapBytes)
     } else {

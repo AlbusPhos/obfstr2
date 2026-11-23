@@ -1,65 +1,66 @@
 name: CI
-
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-
+permissions:
+  contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: always
-
 jobs:
   check:
     name: fmt + clippy + test + doc
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@v7
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
           targets: x86_64-unknown-none
-
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
       - uses: Swatinem/rust-cache@v2
-
       - name: rustfmt (obfstr2 + obfstr2-macros)
         run: |
           cargo fmt --all -- --check
           cd obfstr2-macros && cargo fmt --all -- --check
-
       - name: clippy (obfstr2 + obfstr2-macros)
         run: |
-          cargo clippy --all-targets --all-features -- -D warnings
-          cd obfstr2-macros && cargo clippy --all-targets --all-features -- -D warnings \
+          cargo clippy --all-targets --features alloc,anti-disassembly -- -D warnings
+          cargo clippy --all-targets --features force_heap,anti-disassembly -- -D warnings
+          cargo clippy --all-targets --features alloc,force_stack,anti-disassembly -- -D warnings
+          cd obfstr2-macros && cargo clippy --all-targets --features alloc,anti-disassembly -- -D warnings \
             -W clippy::missing_errors_doc \
             -W clippy::missing_panics_doc \
             -W clippy::undocumented_unsafe_blocks \
             -W clippy::unwrap_used \
             -W clippy::expect_used
-
       - name: test (obfstr2 + obfstr2-macros)
         run: |
-          cargo test --all-features --all-targets
-          cd obfstr2-macros && cargo test --all-features --all-targets
-
+          cargo test --features alloc,anti-disassembly --all-targets
+          cd obfstr2-macros && cargo test --features alloc,anti-disassembly --all-targets
+      - name: test feature powerset (smoke)
+        run: |
+          cargo hack test \
+            --feature-powerset \
+            --include-features alloc,force_heap,force_stack,budget-4m \
+            --mutually-exclusive-features force_heap,force_stack \
+            --test smoke
       - name: run examples
         run: |
-          cargo run --all-features --example showcase
-
+          cargo run --features alloc,anti-disassembly --example showcase
       - name: doctest (obfstr2 + obfstr2-macros)
         run: |
-          cargo test --doc --all-features
-          cd obfstr2-macros && cargo test --doc --all-features
-
+          cargo test --doc --features alloc,anti-disassembly
+          cd obfstr2-macros && cargo test --doc --features alloc,anti-disassembly
       - name: doc build (deny warnings)
         run: |
-          cargo doc --no-deps --all-features
-          cd obfstr2-macros && cargo doc --no-deps --all-features
+          cargo doc --no-deps --features alloc,anti-disassembly
+          cd obfstr2-macros && cargo doc --no-deps --features alloc,anti-disassembly
         env:
           RUSTDOCFLAGS: -D warnings

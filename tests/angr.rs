@@ -3,9 +3,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 #![cfg(unix)]
-
 use lib_unknown::dyntest::DnyRun;
 use std::env;
 use std::error::Error;
@@ -20,17 +18,13 @@ const TEMPLATE: &str = r#"
 #![no_main]
 #![allow(unsafe_code)]
 #![allow(unused)]
-
 use core::arch::asm;
-
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     sys_exit(101)
 }
-
 #[no_mangle]
 pub extern "C" fn rust_eh_personality() {}
-
 #[inline(always)]
 unsafe fn syscall1(n: usize, a1: usize) -> isize {
     let ret: isize;
@@ -47,7 +41,6 @@ unsafe fn syscall1(n: usize, a1: usize) -> isize {
     }
     ret
 }
-
 #[inline(always)]
 unsafe fn syscall3(n: usize, a1: usize, a2: usize, a3: usize) -> isize {
     let ret: isize;
@@ -66,20 +59,16 @@ unsafe fn syscall3(n: usize, a1: usize, a2: usize, a3: usize) -> isize {
     }
     ret
 }
-
 fn sys_write(buf: &[u8]) {
     unsafe { syscall3(1, 1, buf.as_ptr() as usize, buf.len()); }
 }
-
 fn sys_read(buf: &mut [u8]) -> isize {
     unsafe { syscall3(0, 0, buf.as_mut_ptr() as usize, buf.len()) }
 }
-
 fn sys_exit(code: usize) -> ! {
     unsafe { syscall1(60, code); }
     loop {}
 }
-
 fn env_found(envp: *const *const u8, name: &[u8]) -> bool {
     let mut i = 0;
     loop {
@@ -93,7 +82,6 @@ fn env_found(envp: *const *const u8, name: &[u8]) -> bool {
         i += 1;
     }
 }
-
 fn print_hex(mut v: usize) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut buf = [0u8; 16];
@@ -109,30 +97,25 @@ fn print_hex(mut v: usize) {
     sys_write(&buf[i..16]);
     sys_write(b"\n");
 }
-
 #[cold]
 #[inline(never)]
 fn ok() -> ! {
     sys_write(b"ok\n");
     sys_exit(0);
 }
-
 #[cold]
 #[inline(never)]
 fn err() -> ! {
     sys_write(b"err\n");
     sys_exit(1);
 }
-
 fn main(sp: *const usize) -> ! {
     let base = _start as usize;
     print_hex((ok as usize).wrapping_sub(base));
     print_hex((err as usize).wrapping_sub(base));
-
     // 栈布局：argc | argv[0..argc] | NULL | envp[0..] | NULL
     let argc = unsafe { *sp };
     let envp = unsafe { sp.add(argc as usize + 2) } as *const *const u8;
-
     if env_found(envp, b"aaaaaaaaaaaa") {
         let mut input = [0u8; 8];
         sys_read(&mut input);
@@ -144,7 +127,6 @@ fn main(sp: *const usize) -> ! {
     }
     sys_exit(0)
 }
-
 #[no_mangle]
 #[unsafe(naked)]
 extern "C" fn _start() -> ! {
@@ -164,21 +146,15 @@ extern "C" fn _start() -> ! {
 const TEMPLATE2: &str = r#"
 import angr
 import sys
-
 project = angr.Project(r"[[bin]]", auto_load_libs=False)
-
 base = project.entry
 ok_addr = base + [[ok]]
 err_addr = base + [[err]]
-
-
 initial_state = project.factory.entry_state(
     env={"aaaaaaaaaaaa": "1111"},
 )
-
 simgr = project.factory.simgr(initial_state)
 simgr.explore(find=ok_addr, avoid=err_addr)
-
 if simgr.found:
     found_state = simgr.found[0]
     stdin_sol = found_state.posix.dumps(0)
@@ -189,14 +165,13 @@ else:
     sys.exit(1)
 "#;
 
-fn run_with_timeout(python: &str, code: &str, timeout: Duration) -> std::io::Result<Output> {
+fn run_with_timeout(python: &Path, code: &str, timeout: Duration) -> std::io::Result<Output> {
     let mut child = Command::new(python)
         .args(["-c", code])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("aaaaaaaaaaaa", "1111")
         .spawn()?;
-
     let mut stdout = child
         .stdout
         .take()
@@ -205,7 +180,6 @@ fn run_with_timeout(python: &str, code: &str, timeout: Duration) -> std::io::Res
         .stderr
         .take()
         .ok_or_else(|| std::io::Error::other("无法获取子进程 stderr"))?;
-
     let stdout_handle = thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = stdout.read_to_end(&mut buf);
@@ -216,10 +190,8 @@ fn run_with_timeout(python: &str, code: &str, timeout: Duration) -> std::io::Res
         let _ = stderr.read_to_end(&mut buf);
         buf
     });
-
     let start = Instant::now();
     let mut timed_out = false;
-
     let status = loop {
         match child.try_wait()? {
             Some(status) => break status,
@@ -234,17 +206,14 @@ fn run_with_timeout(python: &str, code: &str, timeout: Duration) -> std::io::Res
             }
         }
     };
-
     let mut stdout_buf = stdout_handle.join().unwrap_or_default();
     let stderr_buf = stderr_handle.join().unwrap_or_default();
-
     if timed_out {
         if !stdout_buf.is_empty() && !stdout_buf.ends_with(b"\n") {
             stdout_buf.push(b'\n');
         }
         stdout_buf.extend_from_slice(b"TIMEOUT");
     }
-
     Ok(Output {
         status,
         stdout: stdout_buf,
@@ -252,7 +221,7 @@ fn run_with_timeout(python: &str, code: &str, timeout: Duration) -> std::io::Res
     })
 }
 
-fn run(python: &str, code: &str) -> std::io::Result<Output> {
+fn run(python: &Path, code: &str) -> std::io::Result<Output> {
     run_with_timeout(python, code, Duration::from_secs(10))
 }
 
@@ -262,7 +231,6 @@ fn parse_offsets(stdout: &str) -> (String, String) {
         .map(|s| s.trim())
         .filter(|s| s.starts_with("0x"))
         .collect();
-
     assert!(
         lines.len() >= 2,
         "未能从输出中解析出 ok/err 的偏移地址: \n{}",
@@ -272,7 +240,7 @@ fn parse_offsets(stdout: &str) -> (String, String) {
 }
 
 fn test_with_angr(
-    python: &str,
+    python: &Path,
     bin: &Path,
     ok_offset: &str,
     err_offset: &str,
@@ -282,7 +250,6 @@ fn test_with_angr(
         .replace("[[bin]]", &bin.to_string_lossy())
         .replace("[[ok]]", ok_offset)
         .replace("[[err]]", err_offset);
-
     let out = run_with_timeout(python, &py_code, Duration::from_secs(timeout_secs as u64))?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let is_cracked = out.status.success() && stdout.contains("FOUND");
@@ -302,7 +269,8 @@ fn test_with_angr(
 #[test]
 #[ignore = "需要python angr环境"]
 fn main() -> Result<(), Box<dyn Error>> {
-    let python = if let Ok(py) = env::var("ANGR_PYTHONPATH") {
+    let python = if let Ok(venv) = env::var("VIRTUAL_ENV") {
+        let py = Path::new(&venv).join("bin").join("python");
         let out = run(&py, "import angr; print(ord('哈') + (1 + 3/5))")?;
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).into());
@@ -311,23 +279,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         py
     } else {
-        return Err("需要设置含angr的ANGR_PYTHONPATH环境变量".into());
+        return Err("需要设置含angr的VIRTUAL_ENV环境变量".into());
     };
-
     let deps = format!(
         "obfstr2 = {{ path = {:?}, default-features = false }}
 obfstr = \"0.4\"
 ",
         env!("CARGO_MANIFEST_DIR")
     );
-
     let mut runner = DnyRun::new(&TEMPLATE.replace("[[obfstr]]", "obfstr::obfstr"), &deps);
     runner.release(true);
     runner.cargo_config(
         r#"
 [build]
 target = "x86_64-unknown-none"
-
 [target.x86_64-unknown-none]
 rustflags = [
     "-C", "panic=abort",
@@ -337,26 +302,21 @@ rustflags = [
 ]
 "#,
     );
-
     let ret_base = runner.run(Some(Duration::from_secs(18)));
     assert!(ret_base.ok, "基线构建/运行失败:\n{ret_base}");
     assert!(
         ret_base.stderr.is_empty(),
         "基线构建 stderr 非空:\n{ret_base}"
     );
-
     let bin_path: PathBuf = runner.bin_path();
     let (ok_base, err_base) = parse_offsets(&ret_base.stdout);
-
     println!("[1/2] 正在对 obfstr 进行符号执行求解...");
     let (base_cracked, base_out) = test_with_angr(&python, &bin_path, &ok_base, &err_base, 15)?;
     println!("obfstr 求解结果: {}", base_out.trim());
-
     assert!(
         base_cracked,
         "基准测试失败：angr 应该能够轻松逆向常规的 obfstr 字符串混淆！"
     );
-
     runner.reset_main_code(&TEMPLATE.replace("[[obfstr]]", "&*obfstr2::s3"));
     let ret_obf = runner.run(Some(Duration::from_secs(18)));
     assert!(ret_obf.ok, "防御构建/运行失败:\n{ret_obf}");
@@ -364,18 +324,14 @@ rustflags = [
         ret_obf.stderr.is_empty(),
         "防御构建 stderr 非空:\n{ret_obf}"
     );
-
     let (ok_obf, err_obf) = parse_offsets(&ret_obf.stdout);
-
     println!("[2/2] 正在对 obfstr2 进行符号执行求解（预期应超时/失败）...");
     let (obf_cracked, obf_out) = test_with_angr(&python, &bin_path, &ok_obf, &err_obf, 60)?;
     println!("obfstr2 求解结果: {}", obf_out.trim());
-
     assert!(
         !obf_cracked,
         "防御测试失败：angr 成功破解了 obfstr2！说明未起到抗符号执行作用。"
     );
-
     println!("验证通过：obfstr2 成功防御了 angr 的符号执行分析！");
     Ok(())
 }

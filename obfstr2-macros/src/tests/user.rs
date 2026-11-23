@@ -32,6 +32,7 @@ fn empty_braces_equal_tier_balanced() {
     assert_eq!(tier.max_latency, TIER_BALANCED.max_latency);
     assert_eq!(tier.min_security, TIER_BALANCED.min_security);
     assert_eq!(tier.prefer_stack, TIER_BALANCED.prefer_stack);
+    assert_eq!(tier.force_heap, TIER_BALANCED.force_heap);
     assert_eq!(tier.junk_pct, TIER_BALANCED.junk_pct);
     assert_eq!(tier.cold_pct, TIER_BALANCED.cold_pct);
     assert_eq!(tier.pad_short, TIER_BALANCED.pad_short);
@@ -47,6 +48,7 @@ fn override_all_field_types_and_trailing_comma() {
     let (bytes, tier) = parse_bytes_user(quote!(
         {
             prefer_stack: true,
+            force_heap: false,
             max_latency = 50,
             min_security: 80,
             wrap_pct: 25,
@@ -60,6 +62,7 @@ fn override_all_field_types_and_trailing_comma() {
 
     assert_eq!(bytes, vec![0x41, 0x42, 0x43]);
     assert!(tier.prefer_stack);
+    assert_eq!(tier.force_heap, Some(false));
     assert_eq!(tier.max_latency, 50);
     assert_eq!(tier.min_security, 80);
     assert!(!tier.pad_short);
@@ -86,6 +89,58 @@ fn override_anti_disasm_fields_and_trailing_comma() {
     assert_eq!(tier.anti_disasm_pct, 60);
     assert_eq!(tier.anti_disasm_count_range, 2..=4);
     assert_eq!(tier.anti_disasm_garbage_range, 6..=12);
+}
+
+#[test]
+fn force_heap_override_false_and_none() {
+    // `false` 表示强制走栈，而非“关闭强制堆”
+    let (_, tier) = parse_bytes_user(quote!({ force_heap: false }, b"x")).expect("bool false");
+    assert_eq!(tier.force_heap, Some(false));
+
+    let (_, tier) =
+        parse_bytes_user(quote!({ force_heap = Some(false) }, b"x")).expect("Some(false)");
+    assert_eq!(tier.force_heap, Some(false));
+
+    // `None` 表示继承 Cargo 特性 / 默认启发式
+    let (_, tier) = parse_bytes_user(quote!({ force_heap: None }, b"x")).expect("None");
+    assert_eq!(tier.force_heap, None);
+}
+
+#[cfg(feature = "alloc")]
+#[test]
+fn force_heap_override_true_with_alloc() {
+    let (_, tier) = parse_bytes_user(quote!({ force_heap: true }, b"x")).expect("bool true");
+    assert_eq!(tier.force_heap, Some(true));
+
+    let (_, tier) =
+        parse_bytes_user(quote!({ force_heap = Some(true) }, b"x")).expect("Some(true)");
+    assert_eq!(tier.force_heap, Some(true));
+}
+
+#[cfg(not(feature = "alloc"))]
+#[test]
+fn force_heap_true_rejected_without_alloc() {
+    for input in [
+        quote!({ force_heap: true }, b"x"),
+        quote!({ force_heap: Some(true) }, b"x"),
+    ] {
+        let err = err_of(parse_bytes_user(input));
+        assert!(err.contains("未启用 alloc"), "实际: {err}");
+    }
+}
+
+#[test]
+fn reject_invalid_force_heap_values() {
+    let err = err_of(parse_bytes_user(quote!({ force_heap: 1 }, b"x")));
+    assert!(err.contains("需要布尔字面量"), "实际: {err}");
+
+    let err = err_of(parse_bytes_user(quote!({ force_heap: Some(1) }, b"x")));
+    assert!(err.contains("内需要布尔字面量"), "实际: {err}");
+
+    let err = err_of(parse_bytes_user(
+        quote!({ force_heap: Some(true, false) }, b"x"),
+    ));
+    assert!(err.contains("多余 token"), "实际: {err}");
 }
 
 #[test]

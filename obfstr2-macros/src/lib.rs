@@ -12,6 +12,7 @@
 //! # Warning
 //!
 //! 本 crate 文档仅面向实现者，用户请直接依赖 `obfstr2`，使用根 crate 同名宏（`macro_rules` 包装）并以其文档与可运行示例为准。
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod core;
 mod crypto;

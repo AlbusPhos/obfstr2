@@ -5,14 +5,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! 根 crate 冒烟测试：三档宏、`*_user!` 与 `*_key!` 家族的小载荷 roundtrip。
-//!
-//! 直接调用宏做断言，无需 dyntest 现场建工程，毫秒级。
-use obfstr2::{
-    b_key, b_key_user, b1, b2, b3, cs_key, cs_key_user, cs1, cs2, cs3, cw_key, cw_key_user, cw1,
-    cw2, cw3, f_key, f_key_user, f1, f2, f3, fl_key, fl_key_user, fl1, fl2, fl3, i_key, i_key_user,
-    i1, i2, i3, s_fmt_key, s_fmt_key_user, s_key, s_key_user, s1, s2, s3, w_key, w_key_user, w1,
-    w2, w3,
-};
+use obfstr2::*;
 
 macro_rules! assert_obf_s {
     ($m1:ident, $m2:ident, $m3:ident, [$($input:expr),+ $(,)?]) => {
@@ -203,7 +196,7 @@ fn float_all_tiers_roundtrip() {
     );
     assert_eq!(fl2!(1.7976931348623157e308).to_bits(), f64::MAX.to_bits());
     // 注：f32::MIN_POSITIVE 是最小正规格数（0x00800000），1e-45f32 落入次正规区
-    assert_eq!(fl2!(1e-45f32).to_bits(), (1e-45f32).to_bits());
+    assert_eq!(fl2!(1e-45f32).to_bits(), 1e-45f32.to_bits());
     assert_eq!(
         fl2!(1.17549435e-38f32).to_bits(),
         f32::MIN_POSITIVE.to_bits()
@@ -756,4 +749,547 @@ fn test_lib_unknown() {
     assert_eq!(a, u64::MAX);
     assert_eq!(b, 0xfffffff333);
     assert_eq!(c, 1111);
+}
+
+// ── 独立容器类型（Stack* / Heap*）完整测试矩阵 ──────────────────────────────
+
+use core::any::{Any, TypeId, type_name, type_name_of_val};
+#[cfg(feature = "alloc")]
+use obfstr2::types::{
+    buffer::{HeapBytes, HeapU16},
+    cstr::HeapCStr,
+    str::HeapStr,
+};
+use obfstr2::types::{
+    buffer::{StackBytes, StackU16},
+    cstr::StackCStr,
+    str::StackStr,
+};
+
+/// 运行期精确容器类型断言：
+/// - `Expected` 与 `Actual` 为独立泛型参数，即使类型或容量 `N` 不符也不会导致编译失败；
+/// - 同时校验 `TypeId`（精确到元素类型与定容长度 `N`）与类型名中的 `"Stack"` / `"Heap"` 标识。
+fn assert_container<Expected: 'static, Actual: 'static>(
+    val: &Actual,
+    expect_heap: bool,
+    label: &str,
+) {
+    let actual_name = type_name_of_val(val);
+    let expected_name = type_name::<Expected>();
+    let expected_kind = if expect_heap { "Heap" } else { "Stack" };
+
+    assert!(
+        actual_name.contains(expected_kind),
+        "[{label}] 堆栈族错误：期望包含 `{expected_kind}`，实际类型为 `{actual_name}`"
+    );
+    assert_eq!(
+        Any::type_id(val),
+        TypeId::of::<Expected>(),
+        "[{label}] 容器精确类型或容量 N 不匹配：期望 `{expected_name}`，实际为 `{actual_name}`"
+    );
+}
+
+#[test]
+#[cfg(feature = "alloc")]
+fn test_user_force_heap_matrix() {
+    use obfstr2::{b_user, cs_user, cw_user, f_user, s_user, w_user};
+
+    // ── 1a. *_user! + force_heap: true（短载荷 <= 16B）──
+    let s = s_user!({ force_heap: true }, "123");
+    assert_container::<HeapStr<3>, _>(&s, true, "s_user(force_heap: true)");
+    assert_eq!(&*s, "123");
+
+    let b = b_user!({ force_heap: true }, b"123");
+    assert_container::<HeapBytes<3>, _>(&b, true, "b_user(force_heap: true)");
+    assert_eq!(&*b, b"123");
+
+    let f = f_user!({ force_heap: true }, "assets/fixture.bin");
+    assert_container::<HeapBytes<6>, _>(&f, true, "f_user(force_heap: true)");
+    assert_eq!(&*f, b"secret");
+
+    let cs = cs_user!({ force_heap: true }, c"123");
+    assert_container::<HeapCStr<4>, _>(&cs, true, "cs_user(force_heap: true)");
+    assert_eq!(&*cs, c"123");
+
+    let w = w_user!({ force_heap: true }, "123");
+    assert_container::<HeapU16<3>, _>(&w, true, "w_user(force_heap: true)");
+    assert_eq!(&*w, &[0x31u16, 0x32, 0x33][..]);
+
+    let cw = cw_user!({ force_heap: true }, "123");
+    assert_container::<HeapU16<4>, _>(&cw, true, "cw_user(force_heap: true)");
+    assert_eq!(&*cw, &[0x31u16, 0x32, 0x33, 0][..]);
+
+    // ── 1b. *_key_user! + force_heap: Some(true)（含空载荷 0B 边界）──
+    let sk = s_key_user!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { force_heap: Some(true) },
+        ""
+    );
+    assert_container::<HeapStr<0>, _>(&sk, true, "s_key_user(Some(true), empty)");
+    assert_eq!(&*sk, "");
+
+    let bk = b_key_user!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { force_heap: Some(true) },
+        b"123"
+    );
+    assert_container::<HeapBytes<3>, _>(&bk, true, "b_key_user(Some(true))");
+    assert_eq!(&*bk, b"123");
+
+    let fk = f_key_user!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { force_heap: Some(true) },
+        "assets/fixture.bin"
+    );
+    assert_container::<HeapBytes<6>, _>(&fk, true, "f_key_user(Some(true))");
+    assert_eq!(&*fk, b"secret");
+
+    let csk = cs_key_user!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { force_heap: Some(true) },
+        "123"
+    );
+    assert_container::<HeapCStr<4>, _>(&csk, true, "cs_key_user(Some(true))");
+    assert_eq!(&*csk, c"123");
+
+    let wk = w_key_user!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { force_heap: Some(true) },
+        "123"
+    );
+    assert_container::<HeapU16<3>, _>(&wk, true, "w_key_user(Some(true))");
+    assert_eq!(&*wk, &[0x31u16, 0x32, 0x33][..]);
+
+    let cwk = cw_key_user!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { force_heap: Some(true) },
+        "123"
+    );
+    assert_container::<HeapU16<4>, _>(&cwk, true, "cw_key_user(Some(true))");
+    assert_eq!(&*cwk, &[0x31u16, 0x32, 0x33, 0][..]);
+}
+
+#[test]
+fn test_user_force_stack_matrix() {
+    use obfstr2::{b_user, cs_user, cw_user, f_user, s_user, w_user};
+
+    const LONG_STR: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const LONG_BYTES: &[u8; 64] =
+        b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    // ── 2a. *_user! + force_heap: false（64B 长载荷）──
+    let s = s_user!(
+        { prefer_stack: false, force_heap: false },
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+    assert_container::<StackStr<64>, _>(&s, false, "s_user(force_heap: false)");
+    assert_eq!(&*s, LONG_STR);
+
+    let b = b_user!(
+        { prefer_stack: false, force_heap: false },
+        b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+    assert_container::<StackBytes<64>, _>(&b, false, "b_user(force_heap: false)");
+    assert_eq!(&*b, LONG_BYTES);
+
+    let f = f_user!({ prefer_stack: false, force_heap: false }, "assets/fixture.bin");
+    assert_container::<StackBytes<6>, _>(&f, false, "f_user(force_heap: false)");
+    assert_eq!(&*f, b"secret");
+
+    let cs = cs_user!(
+        { prefer_stack: false, force_heap: false },
+        c"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+    assert_container::<StackCStr<65>, _>(&cs, false, "cs_user(force_heap: false)");
+    assert_eq!(cs.as_bytes(), LONG_BYTES);
+
+    let w = w_user!(
+        { prefer_stack: false, force_heap: false },
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+    assert_container::<StackU16<64>, _>(&w, false, "w_user(force_heap: false)");
+    assert_eq!(w.len(), 64);
+
+    let cw = cw_user!(
+        { prefer_stack: false, force_heap: false },
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+    assert_container::<StackU16<65>, _>(&cw, false, "cw_user(force_heap: false)");
+    assert_eq!(cw.len(), 65);
+
+    // ── 2b. *_key_user! + force_heap: Some(false)（64B 长载荷）──
+    let sk = s_key_user!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { prefer_stack: false, force_heap: Some(false) },
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+    assert_container::<StackStr<64>, _>(&sk, false, "s_key_user(Some(false))");
+    assert_eq!(&*sk, LONG_STR);
+
+    let bk = b_key_user!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { prefer_stack: false, force_heap: Some(false) },
+        b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+    assert_container::<StackBytes<64>, _>(&bk, false, "b_key_user(Some(false))");
+    assert_eq!(&*bk, LONG_BYTES);
+
+    let fk = f_key_user!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { prefer_stack: false, force_heap: Some(false) },
+        "assets/fixture.bin"
+    );
+    assert_container::<StackBytes<6>, _>(&fk, false, "f_key_user(Some(false))");
+    assert_eq!(&*fk, b"secret");
+
+    let csk = cs_key_user!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { prefer_stack: false, force_heap: Some(false) },
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+    assert_container::<StackCStr<65>, _>(&csk, false, "cs_key_user(Some(false))");
+    assert_eq!(csk.as_bytes(), LONG_BYTES);
+
+    let wk = w_key_user!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { prefer_stack: false, force_heap: Some(false) },
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+    assert_container::<StackU16<64>, _>(&wk, false, "w_key_user(Some(false))");
+    assert_eq!(wk.len(), 64);
+
+    let cwk = cw_key_user!(
+        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { prefer_stack: false, force_heap: Some(false) },
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+    assert_container::<StackU16<65>, _>(&cwk, false, "cw_key_user(Some(false))");
+    assert_eq!(cwk.len(), 65);
+}
+
+#[test]
+#[cfg(feature = "force_heap")]
+fn test_feature_force_heap_matrix() {
+    use obfstr2::{b_user, cs_user, cw_user, f_user, s_user, w_user};
+
+    // s 家族（3B 短串 + 空串）
+    assert_container::<HeapStr<0>, _>(&s1!(""), true, "s1(empty)");
+    assert_container::<HeapStr<3>, _>(&s1!("123"), true, "s1");
+    assert_container::<HeapStr<3>, _>(&s2!("123"), true, "s2");
+    assert_container::<HeapStr<3>, _>(&s3!("123"), true, "s3");
+    assert_container::<HeapStr<3>, _>(&s_user!({ force_heap: None }, "123"), true, "s_user(None)");
+    assert_container::<HeapStr<3>, _>(
+        &s_key!({ build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() }, "123"),
+        true,
+        "s_key",
+    );
+
+    // b 家族
+    assert_container::<HeapBytes<0>, _>(&b1!(b""), true, "b1(empty)");
+    assert_container::<HeapBytes<3>, _>(&b1!(b"123"), true, "b1");
+    assert_container::<HeapBytes<3>, _>(&b2!(b"123"), true, "b2");
+    assert_container::<HeapBytes<3>, _>(&b3!(b"123"), true, "b3");
+    assert_container::<HeapBytes<3>, _>(
+        &b_user!({ force_heap: None }, b"123"),
+        true,
+        "b_user(None)",
+    );
+    assert_container::<HeapBytes<3>, _>(
+        &b_key!({ build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() }, b"123"),
+        true,
+        "b_key",
+    );
+
+    // f 家族（assets/fixture.bin = 6B）
+    assert_container::<HeapBytes<6>, _>(&f1!("assets/fixture.bin"), true, "f1");
+    assert_container::<HeapBytes<6>, _>(&f2!("assets/fixture.bin"), true, "f2");
+    assert_container::<HeapBytes<6>, _>(&f3!("assets/fixture.bin"), true, "f3");
+    assert_container::<HeapBytes<6>, _>(
+        &f_user!({ force_heap: None }, "assets/fixture.bin"),
+        true,
+        "f_user(None)",
+    );
+    assert_container::<HeapBytes<6>, _>(
+        &f_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            "assets/fixture.bin"
+        ),
+        true,
+        "f_key",
+    );
+
+    // cs 家族（3B + 1 NUL = 4B）
+    assert_container::<HeapCStr<1>, _>(&cs1!(c""), true, "cs1(empty)");
+    assert_container::<HeapCStr<4>, _>(&cs1!(c"123"), true, "cs1");
+    assert_container::<HeapCStr<4>, _>(&cs2!(c"123"), true, "cs2");
+    assert_container::<HeapCStr<4>, _>(&cs3!(c"123"), true, "cs3");
+    assert_container::<HeapCStr<4>, _>(
+        &cs_user!({ force_heap: None }, c"123"),
+        true,
+        "cs_user(None)",
+    );
+    assert_container::<HeapCStr<4>, _>(
+        &cs_key!({ build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() }, c"123"),
+        true,
+        "cs_key",
+    );
+
+    // w 家族（3 UTF-16 码元）
+    assert_container::<HeapU16<0>, _>(&w1!(""), true, "w1(empty)");
+    assert_container::<HeapU16<3>, _>(&w1!("123"), true, "w1");
+    assert_container::<HeapU16<3>, _>(&w2!("123"), true, "w2");
+    assert_container::<HeapU16<3>, _>(&w3!("123"), true, "w3");
+    assert_container::<HeapU16<3>, _>(&w_user!({ force_heap: None }, "123"), true, "w_user(None)");
+    assert_container::<HeapU16<3>, _>(
+        &w_key!({ build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() }, "123"),
+        true,
+        "w_key",
+    );
+
+    // cw 家族（3 UTF-16 码元 + 1 NUL = 4）
+    assert_container::<HeapU16<1>, _>(&cw1!(""), true, "cw1(empty)");
+    assert_container::<HeapU16<4>, _>(&cw1!("123"), true, "cw1");
+    assert_container::<HeapU16<4>, _>(&cw2!("123"), true, "cw2");
+    assert_container::<HeapU16<4>, _>(&cw3!("123"), true, "cw3");
+    assert_container::<HeapU16<4>, _>(
+        &cw_user!({ force_heap: None }, "123"),
+        true,
+        "cw_user(None)",
+    );
+    assert_container::<HeapU16<4>, _>(
+        &cw_key!({ build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() }, "123"),
+        true,
+        "cw_key",
+    );
+}
+
+#[test]
+#[cfg(feature = "force_stack")]
+fn test_feature_force_stack_matrix() {
+    use obfstr2::{b_user, cs_user, cw_user, f_user, s_user, w_user};
+
+    // s 家族（64B 长载荷）
+    assert_container::<StackStr<64>, _>(
+        &s1!("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "s1(64B)",
+    );
+    assert_container::<StackStr<64>, _>(
+        &s2!("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "s2(64B)",
+    );
+    assert_container::<StackStr<64>, _>(
+        &s3!("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "s3(64B)",
+    );
+    assert_container::<StackStr<64>, _>(
+        &s_user!(
+            { prefer_stack: false, force_heap: None },
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ),
+        false,
+        "s_user(None, 64B)",
+    );
+    assert_container::<StackStr<64>, _>(
+        &s_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ),
+        false,
+        "s_key(64B)",
+    );
+
+    // b 家族（64B 长载荷）
+    assert_container::<StackBytes<64>, _>(
+        &b1!(b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "b1(64B)",
+    );
+    assert_container::<StackBytes<64>, _>(
+        &b2!(b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "b2(64B)",
+    );
+    assert_container::<StackBytes<64>, _>(
+        &b3!(b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "b3(64B)",
+    );
+    assert_container::<StackBytes<64>, _>(
+        &b_user!(
+            { prefer_stack: false, force_heap: None },
+            b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ),
+        false,
+        "b_user(None, 64B)",
+    );
+    assert_container::<StackBytes<64>, _>(
+        &b_key!(
+            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ),
+        false,
+        "b_key(64B)",
+    );
+
+    // f 家族
+    assert_container::<StackBytes<6>, _>(&f1!("assets/fixture.bin"), false, "f1");
+    assert_container::<StackBytes<6>, _>(&f2!("assets/fixture.bin"), false, "f2");
+    assert_container::<StackBytes<6>, _>(&f3!("assets/fixture.bin"), false, "f3");
+    assert_container::<StackBytes<6>, _>(
+        &f_user!({ prefer_stack: false, force_heap: None }, "assets/fixture.bin"),
+        false,
+        "f_user(None)",
+    );
+
+    // cs 家族（64B + 1 NUL = 65B）
+    assert_container::<StackCStr<65>, _>(
+        &cs1!(c"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "cs1(65B)",
+    );
+    assert_container::<StackCStr<65>, _>(
+        &cs2!(c"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "cs2(65B)",
+    );
+    assert_container::<StackCStr<65>, _>(
+        &cs3!(c"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "cs3(65B)",
+    );
+    assert_container::<StackCStr<65>, _>(
+        &cs_user!(
+            { prefer_stack: false, force_heap: None },
+            c"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ),
+        false,
+        "cs_user(None, 65B)",
+    );
+
+    // w 家族（64 UTF-16 码元 = 128B）
+    assert_container::<StackU16<64>, _>(
+        &w1!("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "w1(64u16)",
+    );
+    assert_container::<StackU16<64>, _>(
+        &w2!("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "w2(64u16)",
+    );
+    assert_container::<StackU16<64>, _>(
+        &w3!("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "w3(64u16)",
+    );
+    assert_container::<StackU16<64>, _>(
+        &w_user!(
+            { prefer_stack: false, force_heap: None },
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ),
+        false,
+        "w_user(None, 64u16)",
+    );
+
+    // cw 家族（64 UTF-16 码元 + 1 NUL = 65u16）
+    assert_container::<StackU16<65>, _>(
+        &cw1!("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "cw1(65u16)",
+    );
+    assert_container::<StackU16<65>, _>(
+        &cw2!("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "cw2(65u16)",
+    );
+    assert_container::<StackU16<65>, _>(
+        &cw3!("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        false,
+        "cw3(65u16)",
+    );
+    assert_container::<StackU16<65>, _>(
+        &cw_user!(
+            { prefer_stack: false, force_heap: None },
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ),
+        false,
+        "cw_user(None, 65u16)",
+    );
+}
+
+#[test]
+#[cfg(not(any(feature = "force_heap", feature = "force_stack")))]
+fn test_default_heuristic_container_matrix() {
+    use obfstr2::{b_user, cs_user, cw_user, f_user, s_user, w_user};
+
+    // <= 16B 短载荷：无论是否开启 alloc，默认启发式均保证 100% 走栈
+    assert_container::<StackStr<16>, _>(&s3!("0123456789abcdef"), false, "s3(16B boundary)");
+    assert_container::<StackBytes<16>, _>(&b3!(b"0123456789abcdef"), false, "b3(16B boundary)");
+    assert_container::<StackBytes<6>, _>(&f3!("assets/fixture.bin"), false, "f3(6B)");
+    assert_container::<StackCStr<16>, _>(&cs3!(c"0123456789abcde"), false, "cs3(15B+NUL=16B)");
+    assert_container::<StackU16<8>, _>(&w3!("01234567"), false, "w3(8u16=16B)");
+    assert_container::<StackU16<8>, _>(&cw3!("0123456"), false, "cw3(7u16+NUL=8u16=16B)");
+
+    assert_container::<StackStr<3>, _>(
+        &s_user!({ force_heap: None }, "123"),
+        false,
+        "s_user(None)",
+    );
+    assert_container::<StackBytes<3>, _>(
+        &b_user!({ force_heap: None }, b"123"),
+        false,
+        "b_user(None)",
+    );
+    assert_container::<StackBytes<6>, _>(
+        &f_user!({ force_heap: None }, "assets/fixture.bin"),
+        false,
+        "f_user(None)",
+    );
+    assert_container::<StackCStr<4>, _>(
+        &cs_user!({ force_heap: None }, c"123"),
+        false,
+        "cs_user(None)",
+    );
+    assert_container::<StackU16<3>, _>(
+        &w_user!({ force_heap: None }, "123"),
+        false,
+        "w_user(None)",
+    );
+    assert_container::<StackU16<4>, _>(
+        &cw_user!({ force_heap: None }, "123"),
+        false,
+        "cw_user(None)",
+    );
+
+    #[cfg(not(feature = "alloc"))]
+    {
+        assert_container::<StackStr<32>, _>(
+            &s3!("0123456789abcdef0123456789abcdef"),
+            false,
+            "s3(no_alloc, 32B)",
+        );
+        assert_container::<StackBytes<32>, _>(
+            &b3!(b"0123456789abcdef0123456789abcdef"),
+            false,
+            "b3(no_alloc, 32B)",
+        );
+        assert_container::<StackCStr<33>, _>(
+            &cs3!(c"0123456789abcdef0123456789abcdef"),
+            false,
+            "cs3(no_alloc, 33B)",
+        );
+        assert_container::<StackU16<32>, _>(
+            &w3!("0123456789abcdef0123456789abcdef"),
+            false,
+            "w3(no_alloc, 32u16)",
+        );
+        assert_container::<StackU16<33>, _>(
+            &cw3!("0123456789abcdef0123456789abcdef"),
+            false,
+            "cw3(no_alloc, 33u16)",
+        );
+    }
 }

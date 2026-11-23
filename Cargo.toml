@@ -1,6 +1,6 @@
 [package]
 name = "obfstr2"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 resolver = "2"
 rust-version = "1.92"
@@ -14,9 +14,13 @@ homepage = "https://github.com/AlbusPhos"
 keywords = ["obfuscation", "string", "no-std", "compile-time", "polymorphic"]
 categories = ["no-std", "embedded"]
 
+[package.metadata.docs.rs]
+features = ["alloc", "anti-disassembly"]
+rustdoc-args = ["--cfg", "docsrs"]
+
 
 [dependencies]
-obfstr2-macros = { version = "=0.5.1", path = "obfstr2-macros" }
+obfstr2-macros = { version = "=0.5.2", path = "obfstr2-macros" }
 lib-unknown = { version = "=0.5.0", default-features = false, features = ["crypto", "types", "encoding", "hash-core", "lazy"] }
 anti-disassembly = { version = "0.1.0", optional = true, features = ["red-zone-safety"] }
 
@@ -33,7 +37,6 @@ anti-disassembly = [
     "dep:anti-disassembly",
     "obfstr2-macros/anti-disassembly"
 ]
-
 budget-1k = ["obfstr2-macros/budget-1k"]
 budget-4k = ["obfstr2-macros/budget-4k"]
 budget-16k = ["obfstr2-macros/budget-16k"]
@@ -43,10 +46,11 @@ budget-512k = ["obfstr2-macros/budget-512k"]
 budget-1m = ["obfstr2-macros/budget-1m"]
 budget-4m = ["obfstr2-macros/budget-4m"]
 budget-8m = ["obfstr2-macros/budget-8m"]
+force_heap = ["alloc", "obfstr2-macros/force_heap"]
+force_stack = ["obfstr2-macros/force_stack"]
 
 [dev-dependencies]
 lib-unknown = { version = "=0.5.0", features = ["dyntest"] }
-
 
 [profile.release]
 strip = "symbols"

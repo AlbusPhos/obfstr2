@@ -31,7 +31,7 @@
 
 ```toml
 [dependencies]
-obfstr2 = "0.4"
+obfstr2 = "0.5"
 ```
 
 所有混淆宏均以数字后缀区分强度档位：`1`（低延迟）、`2`（推荐均衡）、`3`（高强度抗逆向）；
@@ -90,18 +90,21 @@ fn main() {
 
 传统的编译期混淆库虽然能绕过 `strings` 与通用分析工具 `FLOSS`，但在针对 Rust 二进制特征与控制流深度定制的专用去混淆工具 [**`rust-deobf`**](https://github.com/VAHPEM/rust-deobf) 面前已全线失守（因其依赖固定内联异或模式、静态密钥布局或标准 AEAD 算法特征）。
 
-得益于多态原语管线、跨块幽灵状态耦合与调用图粉碎机制，在对包含各类受保护载荷的 [`examples/showcase.rs`](examples/showcase.rs) 进行实测时，**`obfstr2` 受宏保护的字符串无一被解出（0 解出）**：
+得益于多态原语管线、跨块幽灵状态耦合与调用图粉碎机制，`obfstr2` 在实测中彻底阻断了 `rust-deobf` 的静态提取与 Unicorn 模拟执行分析：
 
-| 混淆方案 / 工具                 | `strings`  |  `FLOSS`   | [`rust-deobf`](https://github.com/VAHPEM/rust-deobf) | 抗分析与去混淆评估                                                |
-|:--------------------------------|:----------:|:----------:|:----------------------------------------------------:|:------------------------------------------------------------------|
-| `litcrypt` / `litcrypt2`        |   0 / 5    |   0 / 5    |                   **5 / 5 (全破)**                   | ❌ 静态字节异或特征明显                                           |
-| `obfstr` (内联 XOR+ADD)         |   0 / 5    |   0 / 5    |                   **5 / 5 (全破)**                   | ❌ 内联展开模式固定，易被指令模拟还原                             |
-| `cryptify` (默认密钥)           |   0 / 5    |   0 / 5    |                   **5 / 5 (全破)**                   | ❌ 固定解密例程与密钥布局                                         |
-| `muddy` (ChaCha20-Poly1305)     |   0 / 5    |   0 / 5    |                   **5 / 5 (全破)**                   | ❌ 标准密码学常数与 AEAD 调用结构可被精准识别                     |
-| 手写紧凑栈字符串 / XOR / ADD    |   0 / 5    |   0 / 5    |                   **5 / 5 (全破)**                   | ❌ 缺乏控制流屏障与跨块状态耦合                                   |
-| **`obfstr2` (`showcase` 实测)** | **0 解出** | **0 解出** |                 **0 解出 (全免疫)**                  | ✅ **非标多态原语 + 跨块雪崩棘轮 + 虚表蹦床，彻底阻断自动化还原** |
+1. **实战演示样例 ([`examples/showcase.rs`](examples/showcase.rs))**：受宏保护的业务字符串无一被解出（**0 解出**），去混淆器仅在标准库内部截获到无意义的静态查表字符碎片。
+2. **自动化对抗测试 ([`tests/rust_deobf.rs`](tests/rust_deobf.rs))**：对齐 `rust-deobf` 基准评测规范植入 5 大典型 IOC（URL、IP:Port、Mutex、文件路径、注册表路径）。测试结果显示，传统 `obfstr` 基线产物在 0.1 秒内被 **5/5 全量还原**；而切换为 `obfstr2::s2` 均衡档后，函数调用图被粉碎扩张（14 $\to$ 452 个函数），模拟耗时膨胀近 80 倍，最终实现 **0/5 解出（全面免疫）**！
 
-*注：上表前 6 项基线数据引用自 [`rust-deobf` 官方评测基准](https://github.com/VAHPEM/rust-deobf)。*
+| 混淆方案 / 工具                            | `strings`  |  `FLOSS`   | [`rust-deobf`](https://github.com/VAHPEM/rust-deobf) | 抗分析与去混淆评估                                                |
+|:-------------------------------------------|:----------:|:----------:|:----------------------------------------------------:|:------------------------------------------------------------------|
+| `litcrypt` / `litcrypt2`                   |   0 / 5    |   0 / 5    |                   **5 / 5 (全破)**                   | ❌ 静态字节异或特征明显                                           |
+| `obfstr` (内联 XOR+ADD)                    |   0 / 5    |   0 / 5    |                   **5 / 5 (全破)**                   | ❌ 内联展开模式固定，易被指令模拟还原                             |
+| `cryptify` (默认密钥)                      |   0 / 5    |   0 / 5    |                   **5 / 5 (全破)**                   | ❌ 固定解密例程与密钥布局                                         |
+| `muddy` (ChaCha20-Poly1305)                |   0 / 5    |   0 / 5    |                   **5 / 5 (全破)**                   | ❌ 标准密码学常数与 AEAD 调用结构可被精准识别                     |
+| 手写紧凑栈字符串 / XOR / ADD               |   0 / 5    |   0 / 5    |                   **5 / 5 (全破)**                   | ❌ 缺乏控制流屏障与跨块状态耦合                                   |
+| **`obfstr2` (`tests/rust_deobf.rs` 实测)** | **0 解出** | **0 解出** |                 **0 解出 (全免疫)**                  | ✅ **非标多态原语 + 跨块雪崩棘轮 + 虚表蹦床，彻底阻断自动化还原** |
+
+*注：上表前 5 项基线数据引用自 [`rust-deobf` 官方评测基准](https://github.com/VAHPEM/rust-deobf)。*
 
 > **持续对抗演进承诺：**
 > 逆向与反逆向是动态博弈的过程。得益于底层高度解耦的注册表架构，**开发者承诺将定期更新、轮换内置密码学算法与隐写伪签名**，持续刷新代码展开形态与数据特征，确保 `obfstr2` 最新版本的动态多态安全性，让针对性提取规则持续失效。
@@ -166,9 +169,9 @@ $$\text{Security} _ {\text{combined}} = 1 - \prod _ {i=1}^{k} \left(1 - \frac{\t
 
 ### 适用场景 vs 非目标
 
-| ✅ 推荐使用场景                                                                                                                                                                                                                       | ❌ 不适用场景 / 非目标                                                                                                                                                                               |
-|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| • 商业软件 DRM、许可证校验常数、内置公钥/API Key 保护<br>• 游戏反作弊与安全 SDK 中隐藏敏感系统调用名（如 `ntdll.dll`）<br>• `no_std` 嵌入式固件、裸机程序中隐藏硬编码凭证与协议魔数<br>• 内嵌并混淆 MB 级大型二进制资产且要求快速编译 | • 需要二进制制品哈希稳定的可复现构建发布流程<br>• 需要合规审计、明文可读的场景<br>• **不替代**标准密码学库用于网络传输或持久化存储加密<br>• **不对**宿主业务代码做控制流平坦化，也不内置反调试器检测 |
+| ✅ 推荐使用场景                                                                                                                                                                                                                       | ❌ 不适用场景 / 非目标                                                                                                             |
+|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:-----------------------------------------------------------------------------------------------------------------------------------|
+| • 商业软件 DRM、许可证校验常数、内置公钥/API Key 保护<br>• 游戏反作弊与安全 SDK 中隐藏敏感系统调用名（如 `ntdll.dll`）<br>• `no_std` 嵌入式固件、裸机程序中隐藏硬编码凭证与协议魔数<br>• 内嵌并混淆 MB 级大型二进制资产且要求快速编译 | • 需要二进制制品哈希稳定的可复现构建发布流程<br>• 需要合规审计、明文可读的场景<br>• 不替代标准密码学库用于网络传输或持久化存储加密 |
 
 ---
 
@@ -192,7 +195,7 @@ $$\text{Security} _ {\text{combined}} = 1 - \prod _ {i=1}^{k} \left(1 - \frac{\t
 | `*_key_user!`（全家族） | `{ build_key, run_key }, { max_latency: 50, ... }, 载荷` | 同对应同族宏                                                   | 同时配置动态密钥获取和自定义档强度。                                                                                 |
 
 > **使用提示（堆栈路由与类型推断）：**
-> 开启 `alloc`（默认）时，载荷 $\le 16\text{B}$ 恒走栈容器，达到预算上限（主容器 `STACK_BUDGET` / 分块中间容器 `STACK_BUDGET / 2`）恒走堆容器，其间按档位偏好概率随机路由。因此**返回的具体容器类型（`Stack*` 或 `Heap*`）可能随每次编译动态变化**，请始终使用 `let val = s2!("...");` 进行类型推断，切勿写死具体容器类型标注。
+> 开启 `alloc`（默认）时，载荷 $\le 16\text{B}$ 恒走栈容器，达到预算上限（主容器 `STACK_BUDGET` / 分块中间容器 `STACK_BUDGET / 2`）恒走堆容器，其间按档位偏好概率随机路由。可通过 Cargo 特性 `force_heap` / `force_stack`（互斥）或 `*_user!` 配置项 `force_heap` 强制**主容器**路由，但分块中间容器不受强制，仍按上述预算与偏好启发式；`force_stack` 仍受 `STACK_BUDGET` 保护，超限会编译期报错。因此**返回的具体容器类型（`Stack*` 或 `Heap*`）可能随每次编译动态变化**，请始终使用 `let val = s2!("...");` 进行类型推断，切勿写死具体容器类型标注。
 
 ### 自定义强度档 `*_user!`
 
@@ -200,6 +203,7 @@ $$\text{Security} _ {\text{combined}} = 1 - \prod _ {i=1}^{k} \left(1 - \frac{\t
 
 ```rust
 use obfstr2::{cs_user, s_user};
+
 fn main() {
     let greeting = s_user!(
         {
@@ -215,26 +219,29 @@ fn main() {
 
     // 空配置块 {} 等价于均衡档 s2!
     assert_eq!(&*s_user!({}, "hello"), "hello");
+
     // s_fmt_user! 的字面量片段走自定义档混淆
     assert_eq!(cs_user!({ max_latency: 40 }, c"/bin/sh").to_str().ok(), Some("/bin/sh"));
 }
 ```
 
-| 配置键                      | 取值                    | 预设档位默认值（`1` / **`2` 基底** / `3`） | 说明                                                                               |
-|:----------------------------|:------------------------|:------------------------------------------:|:-----------------------------------------------------------------------------------|
-| `prefer_stack`              | `bool`                  |       `true` / **`false`** / `false`       | 堆 / 栈掷币的栈偏好（`true` 时 76% 走栈，`false` 时 40% 走栈）                     |
-| `max_latency`               | `u8`（≥ 2）             |          `30` / **`80`** / `100`           | 单层加密原语与存储策略的延迟上限                                                   |
-| `min_security`              | `u8`（≤ 99）            |           `7` / **`63`** / `93`            | 组合安全度下限（乘法累积，达到即停）                                               |
-| `security_factor`           | `f64`（> 0.0 的有限值） |         `1.0` / **`1.0`** / `1.0`          | 单层安全度缩放系数：`< 1.0` 折减单层贡献（叠加层数更多），`> 1.0` 放大（层数更少） |
-| `wrap_pct`                  | `0..=100`               |           `8` / **`50`** / `85`            | 逐层与逐块非内联外包基础概率（随连续内联次数指数递增）                             |
-| `junk_pct`                  | `0..=100`               |           `2` / **`18`** / `35`            | 拟真垃圾块伴生填充概率                                                             |
-| `cold_pct`                  | `0..=100`               |           `10` / **`20`** / `50`           | 外包函数附加 `#[cold]` 属性（冷热段剥离）的概率                                    |
-| `pad_short`                 | `bool`                  |       `false` / **`true`** / `true`        | 短块（< 16B）强制前置 `pkcs7_16` 预填充（不计入层数与安全度预算）                  |
-| `anti_disasm_pct`           | `0..=100`               |           `5` / **`40`** / `80`            | 反反汇编花指令注入概率（需启用 `anti-disassembly` 特性）                           |
-| `anti_disasm_count_range`   | `lo..=hi`（`u8`）       |      `1..=1` / **`1..=2`** / `2..=3`       | 单次注入的反反汇编块数随机区间                                                     |
-| `anti_disasm_garbage_range` | `lo..=hi`（`u8`）       |     `1..=5` / **`4..=10`** / `8..=15`      | 反反汇编垃圾字节基准随机区间                                                       |
+| 配置键                      | 取值                           | 预设档位默认值（`1` / **`2` 基底** / `3`） | 说明                                                                                      |
+|:----------------------------|:-------------------------------|:------------------------------------------:|:------------------------------------------------------------------------------------------|
+| `prefer_stack`              | `bool`                         |       `true` / **`false`** / `false`       | 堆 / 栈掷币的栈偏好（`true` 时 76% 走栈，`false` 时 40% 走栈）                            |
+| `force_heap`                | `bool` / `Some(bool)` / `None` |        `None` / **`None`** / `None`        | 主容器强制路由：`true` 强制堆、`false` 强制栈、`None` 继承特性 / 默认启发式；仅主容器生效 |
+| `max_latency`               | `u8`（≥ 2）                    |          `30` / **`80`** / `100`           | 单层加密原语与存储策略的延迟上限                                                          |
+| `min_security`              | `u8`（≤ 99）                   |           `7` / **`63`** / `93`            | 组合安全度下限（乘法累积，达到即停）                                                      |
+| `security_factor`           | `f64`（> 0.0 的有限值）        |         `1.0` / **`1.0`** / `1.0`          | 单层安全度缩放系数：`< 1.0` 折减单层贡献（叠加层数更多），`> 1.0` 放大（层数更少）        |
+| `wrap_pct`                  | `0..=100`                      |           `8` / **`50`** / `85`            | 逐层与逐块非内联外包基础概率（随连续内联次数指数递增）                                    |
+| `junk_pct`                  | `0..=100`                      |           `2` / **`18`** / `35`            | 拟真垃圾块伴生填充概率                                                                    |
+| `cold_pct`                  | `0..=100`                      |           `10` / **`20`** / `50`           | 外包函数附加 `#[cold]` 属性（冷热段剥离）的概率                                           |
+| `pad_short`                 | `bool`                         |       `false` / **`true`** / `true`        | 短块（< 16B）强制前置 `pkcs7_16` 预填充（不计入层数与安全度预算）                         |
+| `anti_disasm_pct`           | `0..=100`                      |           `5` / **`40`** / `80`            | 反反汇编花指令注入概率（需启用 `anti-disassembly` 特性）                                  |
+| `anti_disasm_count_range`   | `lo..=hi`（`u8`）              |      `1..=1` / **`1..=2`** / `2..=3`       | 单次注入的反反汇编块数随机区间                                                            |
+| `anti_disasm_garbage_range` | `lo..=hi`（`u8`）              |     `1..=5` / **`4..=10`** / `8..=15`      | 反反汇编垃圾字节基准随机区间                                                              |
 
 - 键支持 `key: val` 与 `key = val` 两种写法，逗号分隔，配置块内与载荷后均允许尾随逗号；
+- `force_heap` 接受 `true` / `false` / `Some(true)` / `Some(false)` / `None`；`false` 表示强制走栈，而非“关闭强制堆”。优先级：`*_user!` 配置 > Cargo 特性（`force_heap` / `force_stack`）> 默认启发式；分块中间容器始终按预算与 `prefer_stack` 启发式路由，未启用 `alloc` 时 `true` / `Some(true)` 会在编译期被拒绝。
 
 ### 动态密钥档 `*_key!`
 
@@ -274,12 +281,24 @@ fn main() {
 | `lazy`             | `no_std` 版 `LazyLock` / `OnceLock`                                                         |
 
 ```rust
-use obfstr2::{const_random, hide_array, hide_array_lazy, lazy};
+use std::hint::black_box;
+use obfstr2::{const_random, hide_array, hide_array_lazy, s_user};
+use obfstr2::types::str::StackStr;
+use obfstr2::lazy::LazyLock;
 
 const SALT: u64 = const_random!(u64, "demo");
-static TABLE: lazy::LazyLock<[u32; 4]> = hide_array_lazy!(u32, [1, 2, 3, 4]);
+static TABLE: LazyLock<[u32; 4]> = hide_array_lazy!(u32, [1, 2, 3, 4]);
+// 主要通过 _user 档显式关闭 force_heap 以固定类型为 StackStr，便于放入 LazyLock
+static STR: LazyLock<StackStr<70>> = LazyLock::new(|| s_user!({ force_heap: false }, "hello_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+
+fn hot() {
+    for _ in 0..black_box(100) {
+        println!("{}", &*STR)
+    }
+}
 
 fn main() {
+    hot();
     let [a, b, c] = hide_array!(u8, [1, 2, 3]);
     assert_eq!((a, b, c), (1, 2, 3));
     assert_eq!(TABLE[0], 1);
@@ -298,14 +317,19 @@ fn main() {
 | `default`                 |  ✅  | 默认启用 `alloc` 与 `anti-disassembly`。                                                                              |
 | `alloc`                   |  ✅  | 启用堆内存容器（`Heap*`）支持及 `s_fmt*!` 宏。支持 `no_std + alloc` 环境。                                            |
 | `anti-disassembly`        |  ✅  | 启用 x86 / x86_64 反反汇编花指令内联汇编注入，并开启红区（Red-Zone）安全保护。对体积或运行时极度敏感的场景可关闭。    |
+| `force_heap`              |  ❌  | 强制各容器宏的主容器走堆（隐含启用 `alloc`）；与 `force_stack` 互斥，不可同时启用。                                   |
+| `force_stack`             |  ❌  | 强制各容器宏的主容器走栈；分块中间容器仍可走堆；与 `force_heap` 互斥，主容器超出 `STACK_BUDGET` 时编译期报错。        |
 | `budget-1k` ~ `budget-8m` |  ❌  | 栈预算上限控制：可选 `1k`, `4k`（默认）, `16k`, `64k`, `256k`, `512k`, `1m`, `4m`, `8m`。同时启用多个时取最大档生效。 |
+
+> `force_heap` 与 `force_stack` 互斥，`--all-features` 会同时启用二者并在编译期报错；请使用显式特性组合（参见[贡献与开发验证](#贡献与开发验证)）。
 
 **纯栈裸机模式（无 `alloc`、无花指令注入）：**
 ```toml
 [dependencies]
-obfstr2 = { version = "0.4", default-features = false }
+obfstr2 = { version = "0.5", default-features = false }
 ```
-*注：关闭 `alloc` 后所有档位恒使用栈容器（`Stack*`）；若主容器总大小达到 `STACK_BUDGET` 或单块解密峰值体积达到 `STACK_BUDGET / 2`，将在编译期直接报错提示调大 `budget-*`。*
+
+*注：关闭 `alloc` 后所有档位恒使用栈容器（`Stack*`）；若需保留 `alloc` 但强制主容器走栈，可启用 `force_stack`（分块中间容器仍可能走堆）。若主容器总大小达到 `STACK_BUDGET` 或单块解密峰值体积达到 `STACK_BUDGET / 2`，将在编译期直接报错提示调大 `budget-*`。*
 
 ---
 
@@ -330,7 +354,6 @@ obfstr2 = { version = "0.4", default-features = false }
 - **测试参数**：`PAYLOAD_LEN = 1024`（全 `'a'`），`LOOPS = 512`（解密 + 校验和累加，返回值经 `black_box` 防止循环外提），`profile = release`，每组重复 3 次取中位数。
 - **单次去混淆耗时**：`(当前行耗时 - 基线耗时) / 512`，抵消进程启动固定开销。
 - **构建耗时**：冷构建为新建独立临时工程从零编译（含依赖）；增量构建为共享预热依赖后仅重写 `main.rs` 触发编译。
-
 </details>
 
 ---
@@ -354,32 +377,47 @@ obfstr2 = { version = "0.4", default-features = false }
 
 **常规测试与校准套件：**
 ```bash
-# 1. 基础功能与宏正确性（毫秒级）
+# 基础功能与宏正确性
 cargo test --test smoke --test s_fmt
 cd obfstr2-macros && cargo test --lib
 
-# 2. 非法输入编译期拒绝测试
+# 非法输入编译期拒绝测试
 cargo test --test compile_fail
 
-# 3. 裸机 no_std 链路验证（需安装 x86_64-unknown-none target）
+# 裸机 no_std 链路验证（需安装 x86_64-unknown-none target）
 cargo test --test nostd
 
-# 4. 性能基准报告（需联网拉取对比库并安装 cargo-expand）
+# 性能基准报告
 cargo test --test perf -- --ignored --nocapture
 
-# 5. 存储策略与加密原语延迟/安全度校准（耗时较长，最后两项需配置 Python angr 环境）
+# 存储策略与加密原语延迟校准
 cd obfstr2-macros && cargo test --lib test_storages_latency -- --ignored --nocapture
 cd obfstr2-macros && cargo test --lib tests::crypto::test_cryptos_latency -- --ignored --nocapture
-ANGR_PYTHONPATH=/path/to/python-with-angr cargo test --manifest-path obfstr2-macros/Cargo.toml --lib tests::crypto::test_cryptos_security -- --ignored --nocapture
-ANGR_PYTHONPATH=/path/to/python-with-angr cargo test --test angr -- main --ignored --nocapture
+
+# 自动化逆向对抗回归测试（angr 符号执行 & rust-deobf 模拟器）
+# 需配置含 angr 与 rust-deobf 的 Python 虚拟环境，激活虚拟环境或显式指定 VIRTUAL_ENV：
+source /path/to/.venv/bin/activate
+cargo test --manifest-path obfstr2-macros/Cargo.toml --lib tests::crypto::test_cryptos_security -- --ignored --nocapture
+cargo test --test angr -- main --ignored --nocapture
+cargo test --test rust_deobf -- main --ignored --nocapture
+# 若未激活虚拟环境，也可显式传参：
+# VIRTUAL_ENV=/path/to/.venv cargo test --test rust_deobf -- main --ignored --nocapture
 ```
 
 **提交前代码规范检查：**
 ```bash
 cargo fmt --all -- --check
 cd obfstr2-macros && cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cd obfstr2-macros && cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets --features alloc,anti-disassembly -- -D warnings
+cargo clippy --all-targets --features force_heap,anti-disassembly -- -D warnings
+cargo clippy --all-targets --features alloc,force_stack,anti-disassembly -- -D warnings
+cd obfstr2-macros && cargo clippy --all-targets --features alloc,anti-disassembly -- -D warnings
+
+# 可选：安装 cargo-hack 后运行特性幂集 smoke 测试
+cargo hack test --feature-powerset \
+  --include-features alloc,force_heap,force_stack,budget-4m \
+  --mutually-exclusive-features force_heap,force_stack \
+  --test smoke
 ```
 </details>
 
