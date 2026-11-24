@@ -4,15 +4,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! `crate::core` 编排内核单测（自 `core.rs` 内联测试模块迁移）：
 //! 包装概率函数、`security_factor` 层数缩放、折叠树收敛边界与三档选层批量模拟。
 
 #![allow(clippy::expect_used)]
 
-use crate::core::{
-    ChunkNode, FOLD_GROUP_MAX, TIER_BALANCED, TIER_HIGH, TIER_LOW, TierParams, effective_wrap_pct,
-    encrypt_layers, fold_chunk_nodes,
-};
+use crate::core::{effective_wrap_pct, encrypt_layers, fold_chunk_nodes, get_take_size, ChunkNode, TierParams, FOLD_GROUP_MAX, TIER_BALANCED, TIER_HIGH, TIER_LOW};
 use crate::crypto::CRYPTOS;
 use lib_unknown::rand::core::random;
 use proc_macro2::TokenStream as TokenStream2;
@@ -26,11 +22,6 @@ fn effective_wrap_pct_starts_at_base() {
     assert_eq!(effective_wrap_pct(0, 999), 0);
 }
 
-/// `security_factor` 应按缩放后的单层安全度上界影响层数：
-/// - 均衡档可用原语的单层安全度上界为 57（`mse`），factor=100 时单层即达
-///   `min_security=63`，层数受 `target_layers`（≤2）约束；
-/// - factor=0.1 时单层贡献上界 5.7%，达到 63% 需 `ln(0.37)/ln(0.943) ≈ 17` 层
-///   （数学下界，与随机原语选择无关）。
 #[test]
 fn security_factor_scales_layer_count() {
     let fast = TierParams {
@@ -291,5 +282,176 @@ fn simulate_crypto_selection_across_tiers() {
             "tier {} 存在无法完成加密选层的 chunk 长度",
             case.name
         );
+    }
+}
+
+
+#[derive(Debug, Clone)]
+struct RunMetrics {
+    count: f64,
+    min: f64,
+    max: f64,
+    median: f64,
+    mean: f64,
+}
+
+fn format_bytes(bytes: f64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes / GB)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes / MB)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes / KB)
+    } else {
+        format!("{:.0} B", bytes)
+    }
+}
+
+fn calc_mean(data: &[f64]) -> f64 {
+    if data.is_empty() { return 0.0; }
+    data.iter().sum::<f64>() / data.len() as f64
+}
+
+fn calc_median(data: &mut [f64]) -> f64 {
+    if data.is_empty() { return 0.0; }
+    data.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mid = data.len() / 2;
+    if data.len() % 2 == 0 {
+        (data[mid - 1] + data[mid]) / 2.0
+    } else {
+        data[mid]
+    }
+}
+
+/// 模拟单次完整分块过程，返回实际每次切分的大小序列
+fn simulate_chunks(total_size: usize) -> Vec<usize> {
+    let mut chunks = Vec::new();
+    let mut remaining = total_size;
+    let mut idx = 0;
+    while remaining > 0 {
+        let take = get_take_size(idx, remaining);
+        chunks.push(take);
+        remaining -= take;
+        idx += 1;
+    }
+    chunks
+}
+
+/// 根据单次分块序列计算各项统计指标
+fn compute_metrics(chunks: &[usize]) -> RunMetrics {
+    let mut float_chunks: Vec<f64> = chunks.iter().map(|&c| c as f64).collect();
+    let count = float_chunks.len() as f64;
+    let min = *float_chunks.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+    let max = *float_chunks.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+    let mean = calc_mean(&float_chunks);
+    let median = calc_median(&mut float_chunks);
+    RunMetrics { count, min, max, median, mean }
+}
+
+/// 格式化分块链：块数少时全部打印，块数多时展示前5个和后3个，省略中间部分
+fn format_chain(chunks: &[usize]) -> String {
+    if chunks.len() <= 30 {
+        let items: Vec<String> = chunks.iter().map(|&c| format_bytes(c as f64)).collect();
+        format!("(共 {:>2} 块): [{}]", chunks.len(), items.join(" -> "))
+    } else {
+        let head: Vec<String> = chunks[..14].iter().map(|&c| format_bytes(c as f64)).collect();
+        let tail: Vec<String> = chunks[chunks.len() - 14..].iter().map(|&c| format_bytes(c as f64)).collect();
+        format!(
+            "(共 {:>2} 块): [{} -> ... (省略 {} 块) ... -> {}]",
+            chunks.len(),
+            head.join(" -> "),
+            chunks.len() - (head.len() + tail.len()),
+            tail.join(" -> ")
+        )
+    }
+}
+
+#[test]
+fn test_benchmark_chunking_distribution() {
+    let test_cases = vec![
+        1,
+        4,
+        8,
+        16,
+        32,
+        64,
+        128,
+        512,
+        1024,
+        10 * 1024,          // 10 KB
+        100 * 1024,         // 100 KB
+        1024 * 1024,        // 1 MB
+        10 * 1024 * 1024,   // 10 MB
+        50 * 1024 * 1024,   // 50 MB
+    ];
+    let num_runs = 200;
+
+    println!("\n{:=<96}", "");
+    println!(
+        "{:<10} | {:<6} | {:>10} | {:>12} | {:>12} | {:>14} | {:>14}",
+        "Payload", "Metric", "块数(Count)", "最小块(Min)", "最大块(Max)", "中位数(Median)", "平均数(Mean)"
+    );
+    println!("{:-<96}", "");
+
+    for size in test_cases {
+        let mut counts = Vec::with_capacity(num_runs);
+        let mut mins = Vec::with_capacity(num_runs);
+        let mut maxs = Vec::with_capacity(num_runs);
+        let mut medians = Vec::with_capacity(num_runs);
+        let mut means = Vec::with_capacity(num_runs);
+
+        // 存储 3 条模拟样本链
+        let mut sample_chains: Vec<Vec<usize>> = Vec::with_capacity(3);
+
+        for i in 0..num_runs {
+            let chunks = simulate_chunks(size);
+
+            if i < 3 {
+                sample_chains.push(chunks.clone());
+            }
+
+            let m = compute_metrics(&chunks);
+            counts.push(m.count);
+            mins.push(m.min);
+            maxs.push(m.max);
+            medians.push(m.median);
+            means.push(m.mean);
+        }
+
+        let payload_str = format_bytes(size as f64);
+
+        // 1. 打印平均数
+        println!(
+            "{:<10} | {:<6} | {:>10.1} | {:>12} | {:>12} | {:>14} | {:>14}",
+            payload_str,
+            "平均数",
+            calc_mean(&counts),
+            format_bytes(calc_mean(&mins)),
+            format_bytes(calc_mean(&maxs)),
+            format_bytes(calc_mean(&medians)),
+            format_bytes(calc_mean(&means)),
+        );
+
+        // 2. 打印中位数
+        println!(
+            "{:<10} | {:<6} | {:>10.1} | {:>12} | {:>12} | {:>14} | {:>14}",
+            "",
+            "中位数",
+            calc_median(&mut counts),
+            format_bytes(calc_median(&mut mins)),
+            format_bytes(calc_median(&mut maxs)),
+            format_bytes(calc_median(&mut medians)),
+            format_bytes(calc_median(&mut means)),
+        );
+
+        // 3. 打印 3 条模拟大小链样本
+        for (idx, chain) in sample_chains.iter().enumerate() {
+            println!("  └─ 样本 {} {}", idx + 1, format_chain(chain));
+        }
+
+        println!("{:-<96}", "");
     }
 }

@@ -210,10 +210,23 @@ fn hb2_storage_text(data: &[u8]) -> (String, [u8; 2]) {
                     break;
                 };
 
-                let insert_pos = random_range(0..=out.len());
+                let take = if snippet.len() <= budget {
+                    snippet.len()
+                } else {
+                    let mut i = budget;
+                    while i > 0 && (snippet[i] & 0xC0) == 0x80 {
+                        i -= 1;
+                    }
+                    i
+                };
 
-                out.splice(insert_pos..insert_pos, snippet.iter().copied());
-                budget = budget.saturating_sub(snippet.len());
+                if take == 0 {
+                    break;
+                }
+
+                let insert_pos = random_range(0..=out.len());
+                out.splice(insert_pos..insert_pos, snippet[..take].iter().copied());
+                budget -= take;
             }
         }
     }

@@ -79,13 +79,12 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 let (key, iv) = (ctx.key_ident.clone(), ctx.iv);
                 let ast = quote! {
                     {
-                        let key = ::core::hint::black_box(#key as u64);
-                        let mut l = ::core::hint::black_box(#iv as u8);
+                        let mut l = #iv;
                         for c in #in_ident.iter_mut() {
                             let next_l = *c;
-                            let v = *c ^ key.rotate_left(l as u32) as u8;
-                            *c = ::core::hint::black_box(v);
-                            l = ::core::hint::black_box(next_l);
+                            let v = *c ^ #key.rotate_left(l as u32) as u8;
+                            *c = v;
+                            l = next_l;
                         }
                     }
                 };
@@ -118,12 +117,11 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 let (key, iv) = (ctx.key_ident.clone(), ctx.iv);
                 let ast = quote! {
                     {
-                        let key = ::core::hint::black_box(#key as u64);
                         let mut prev = ::core::hint::black_box(#iv as u8);
                         for (i, c) in #in_ident.iter_mut().enumerate() {
                             let next_prev = *c;
                             let k = ::core::hint::black_box(
-                                ::obfstr2::crypto::core::mix::mix64(key ^ i as u64) as u8
+                                ::obfstr2::crypto::core::mix::mix64(#key ^ i as u64) as u8
                             );
                             let v = (*c).wrapping_add(prev) ^ k;
                             *c = ::core::hint::black_box(v);
@@ -143,82 +141,6 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 cognitive_load: 28,
             },
         },
-        // 包装加减法与位置密钥
-        Crypto {
-            enc: |ctx, mut chunk| {
-                let (key, iv) = (ctx.key, ctx.iv);
-                for (i, c) in chunk.iter_mut().enumerate() {
-                    let k =
-                        lib_unknown::crypto::core::mix::mix64((key ^ iv as u64) ^ i as u64) as u8;
-                    *c = c.wrapping_add(k);
-                }
-                ctx.out_size = chunk.len();
-                chunk
-            },
-            dec: |ctx, in_ident| {
-                let (key, iv) = (ctx.key_ident.clone(), ctx.iv);
-                let ast = quote! {
-                    {
-                        let key = ::core::hint::black_box(#key as u64);
-                        let iv = ::core::hint::black_box(#iv as u64);
-                        for (i, c) in #in_ident.iter_mut().enumerate() {
-                            let k = ::core::hint::black_box(
-                                ::obfstr2::crypto::core::mix::mix64((key ^ iv) ^ i as u64) as u8
-                            );
-                            let v = c.wrapping_sub(k);
-                            *c = ::core::hint::black_box(v);
-                        }
-                    }
-                };
-                (ast, in_ident)
-            },
-            name: "wrapping_add",
-            support: |_len| true,
-            security: 7,
-            latency: 9,
-            // 标准位置流密码：每字节调一次 mix64，但字节间无状态反馈，F5 逻辑直观
-            metrics: CryptoMetrics {
-                attack_complexity: 35,
-                cognitive_load: 18,
-            },
-        },
-        // 乘法逆元混淆
-        Crypto {
-            enc: |ctx, mut chunk| {
-                let key = ctx.key;
-                for (i, c) in chunk.iter_mut().enumerate() {
-                    let k = (lib_unknown::crypto::core::mix::mix64(key ^ i as u64) as u8) | 1;
-                    *c = c.wrapping_mul(lib_unknown::crypto::core::inv_mul::inv_mul8(k));
-                }
-                ctx.out_size = chunk.len();
-                chunk
-            },
-            dec: |ctx, in_ident| {
-                let key = ctx.key_ident.clone();
-                let ast = quote! {
-                    {
-                        let key = ::core::hint::black_box(#key as u64);
-                        for (i, c) in #in_ident.iter_mut().enumerate() {
-                            let k = ::core::hint::black_box(
-                                (::obfstr2::crypto::core::mix::mix64(key ^ i as u64) as u8) | 1
-                            );
-                            let v = c.wrapping_mul(k);
-                            *c = ::core::hint::black_box(v);
-                        }
-                    }
-                };
-                (ast, in_ident)
-            },
-            name: "inv_mul",
-            support: |_len| true,
-            security: 9,
-            latency: 24,
-            // 解密端仅需单次奇数乘法（免求逆），开销低
-            metrics: CryptoMetrics {
-                attack_complexity: 32,
-                cognitive_load: 18,
-            },
-        },
         // 动态位移混淆 + 位置流异或
         Crypto {
             enc: |ctx, mut chunk| {
@@ -236,10 +158,9 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 let key = ctx.key_ident.clone();
                 let ast = quote! {
                     {
-                        let key = ::core::hint::black_box(#key as u64);
                         for (i, c) in #in_ident.iter_mut().enumerate() {
                             let m = ::core::hint::black_box(
-                                ::obfstr2::crypto::core::mix::mix64(key ^ i as u64)
+                                ::obfstr2::crypto::core::mix::mix64(#key ^ i as u64)
                             );
                             let rot = ::core::hint::black_box((m % 8) as u32);
                             let x = ::core::hint::black_box((m >> 8) as u8);
@@ -274,12 +195,7 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 let (key, iv) = (ctx.key_ident.clone(), ctx.iv);
                 let ast = quote! {
                     {
-                        let key = ::core::hint::black_box(#key as u64);
-                        let iv = ::core::hint::black_box(#iv as u8);
-                        let _ = ::obfstr2::crypto::mse::imse_no_ps(#in_ident.as_mut_slice(), key, iv);
-                        for b in #in_ident.iter_mut() {
-                            *b = ::core::hint::black_box(*b);
-                        }
+                        let _ = ::obfstr2::crypto::mse::imse_no_ps(#in_ident.as_mut_slice(), #key, #iv);
                     }
                 };
                 (ast, in_ident)
@@ -306,12 +222,7 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 let (key, iv) = (ctx.key_ident.clone(), ctx.iv);
                 let ast = quote! {
                     {
-                        let key = ::core::hint::black_box(#key as u64);
-                        let iv = ::core::hint::black_box(#iv as u8);
-                        let _ = ::obfstr2::crypto::mse::imse_no_s(#in_ident.as_mut_slice(), key, iv);
-                        for b in #in_ident.iter_mut() {
-                            *b = ::core::hint::black_box(*b);
-                        }
+                        let _ = ::obfstr2::crypto::mse::imse_no_s(#in_ident.as_mut_slice(), #key, #iv);
                     }
                 };
                 (ast, in_ident)
@@ -337,12 +248,7 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 let (key, iv) = (ctx.key_ident.clone(), ctx.iv);
                 let ast = quote! {
                     {
-                        let key = ::core::hint::black_box(#key as u64);
-                        let iv = ::core::hint::black_box(#iv as u8);
-                        let _ = ::obfstr2::crypto::mse::imse(#in_ident.as_mut_slice(), key, iv);
-                        for b in #in_ident.iter_mut() {
-                            *b = ::core::hint::black_box(*b);
-                        }
+                        let _ = ::obfstr2::crypto::mse::imse(#in_ident.as_mut_slice(), #key, #iv);
                     }
                 };
                 (ast, in_ident)
@@ -376,18 +282,13 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 let pt = ctx.in_size;
                 let out_ident = format_ident!("__tmp_{}", ctx.ident_tag);
                 let ast = quote! {
-                    // 只需设置长度：imse2 通过 `as_mut_slice()` 判断输出容量，随后会整体覆写。
-                    // 使用 new_zeroed 避免仅为了预填长度而整块拷贝输入。
                     let mut #out_ident = unsafe { #path::<#pt>::new_zeroed(#pt).unwrap_unchecked() };
-
-                    let key = ::core::hint::black_box(#key as u64);
-                    let iv = ::core::hint::black_box(#iv as u64);
 
                     let _ = ::obfstr2::crypto::mse2::imse2(
                         #in_ident.as_slice(),
                         #out_ident.as_mut_slice(),
-                        key,
-                        iv,
+                        #key,
+                        #iv as u64,
                     );
 
                     drop(#in_ident);
@@ -452,8 +353,7 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 let key = ctx.key_ident.clone();
                 let ast = quote! {
                     {
-                        let key = ::core::hint::black_box(#key as u64);
-                        let p = ::core::hint::black_box(::obfstr2::crypto::core::boxs::gen_p(key));
+                        let p = ::core::hint::black_box(::obfstr2::crypto::core::boxs::gen_p(#key));
                         let p_inv = ::core::hint::black_box(unsafe {
                             ::obfstr2::crypto::core::boxs::inv_p(&p).unwrap_unchecked()
                         });
@@ -490,8 +390,7 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 let key = ctx.key_ident.clone();
                 let ast = quote! {
                     {
-                        let key = ::core::hint::black_box(#key as u64);
-                        let s = ::core::hint::black_box(::obfstr2::crypto::core::boxs::gen_s(key));
+                        let s = ::core::hint::black_box(::obfstr2::crypto::core::boxs::gen_s(#key));
                         let s_inv = ::core::hint::black_box(unsafe {
                             ::obfstr2::crypto::core::boxs::inv_s(&s).unwrap_unchecked()
                         });
@@ -532,15 +431,13 @@ pub(crate) static CRYPTOS: LazyLock<Vec<Crypto>> = LazyLock::new(|| {
                 let tag = ctx.ident_tag.clone();
                 let out_ident = format_ident!("__tmp_{tag}"); // 长度改变需要更新容器
                 let ast = quote! {
-                    // 只需设置长度：pkcs7_unpad 通过 `as_mut_slice()` 判断输出容量，随后会整体覆写。
                     let mut #out_ident = unsafe { #path::<#pt>::new_zeroed(#pt).unwrap_unchecked() };
 
-                    let align = ::core::hint::black_box(16usize);
                     let _ = ::core::hint::black_box(
                         ::obfstr2::crypto::core::padding::pkcs7_unpad(
                             #in_ident.as_slice(),
                             #out_ident.as_mut_slice(),
-                            align,
+                            16usize,
                         )
                         .ok(),
                     );

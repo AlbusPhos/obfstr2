@@ -15,7 +15,6 @@ use std::time::{Duration, Instant};
 
 /// 栽种 5 类带明确 IOC 标签的测试载荷（对齐 rust-deobf 的 scatter 评测基准）：
 /// 涵盖 [url]、[ip]、[mutex]、[path] 与 [registry]，
-/// 确保一旦被解密，100% 命中 rust-deobf 的 IOC 识别器且不会被防误报过滤器丢弃。
 const SECRETS: &[&str] = &[
     "https://api.example.com/v1/beacon",
     "10.66.12.7:8443",
@@ -194,15 +193,15 @@ fn test_with_rust_deobf(
 }
 
 // running 1 test
-// [1/2] 正在使用 rust-deobf 分析 obfstr 基线产物...
+// [1/2] 正在使用 rust-deobf 分析 obfstr::obfstr 基线产物...
 // obfstr 分析输出:
-// binary: dyn_test_1795426965415237260_3827741242   format=ELF   arch=x86_64
-//   static x86-64 (recover_callsite): 0 strings  decoders=0  seconds=0.0
-//   emulation (recover_emulate): 5 strings  functions=14/14  timed_out=False  workers=1  seconds=0.1
+// binary: dyn_test_1795511522210229705_834893268   format=ELF   arch=x86_64
+//   static x86-64 (recover_callsite): 0 strings  decoders=0  seconds=0.1
+//   emulation (recover_emulate): 5 strings  functions=14/14  timed_out=False  workers=1  seconds=0.2
 //   compressed strings (recover_blobs): 0 strings  streams=0  seconds=0.0
 //   static stack strings (recover_stackstrings): 0 strings  seconds=0.0
 //   Rust literals (recover_rust_strings): 0 strings  unexplained=1  seconds=0.0
-//
+// 
 // == decoded strings ==
 //   10.66.12.7:8443   [ip]
 //       function 0x201874  (emulation)
@@ -214,24 +213,30 @@ fn test_with_rust_deobf(
 //       function 0x201874  (emulation)
 //   Global\OrbitNotes-5c1e9a   [mutex]
 //       function 0x201637  (emulation)
-// [2/2] 正在使用 rust-deobf 分析 obfstr2 防御产物（预期 0 解出）...
+// [2/2] 正在使用 rust-deobf 分析 &*obfstr2::s2 防御产物（预期 0 解出）...
 // obfstr2 分析输出:
-// binary: dyn_test_1795426965415237260_3827741242   format=ELF   arch=x86_64
+// binary: dyn_test_1795511522210229705_834893268   format=ELF   arch=x86_64
 //   static x86-64 (recover_callsite): 0 strings  decoders=0  seconds=0.1
-//   emulation (recover_emulate): 2 strings  functions=452/452  timed_out=False  workers=1  seconds=7.8
+//   emulation (recover_emulate): 6 strings  functions=473/473  timed_out=False  workers=1  seconds=12.3
 //   compressed strings (recover_blobs): 0 strings  streams=0  seconds=0.0
 //   static stack strings (recover_stackstrings): 0 strings  seconds=0.3
-//   Rust literals (recover_rust_strings): 30 strings  unexplained=64  seconds=0.1
-//
+//   Rust literals (recover_rust_strings): 30 strings  unexplained=70  seconds=0.1
+// 
 // == decoded strings ==
+//   `abcdefghijkl
+//       function 0x2059e6  (emulation)
 //   BCDEFGHIJKLMNOPQRSTU
-//       function 0x2037b8  (emulation)
-//   ^_`abcdefghijklmnopqrstuvw
-//       function 0x2080f5  (emulation)
+//       function 0x204fb2  (emulation)
+//   defghijklmnopqrstuv
+//       function 0x20764c  (emulation)
+//   cdefghijklmno
+//       function 0x207c8c  (emulation)
+//   =>?@ABCDEFGHIJKLMNOPQR
+//       function 0x211e9c  (emulation)
+//   _`abcdefghijk
+//       function 0x21081b  (emulation)
 // 验证通过：obfstr 被还原 5/5，而 obfstr2 实现 0/5 解出，成功免疫 rust-deobf！
 // test main ... ok
-//
-// test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.04s
 #[test]
 #[ignore = "需要python rust-deobf环境"]
 fn main() -> Result<(), Box<dyn Error>> {
@@ -251,7 +256,9 @@ fn main() -> Result<(), Box<dyn Error>> {
          obfstr = \"0.4\"\n",
         env!("CARGO_MANIFEST_DIR")
     );
-    let mut runner = DnyRun::new(&TEMPLATE.replace("[[obfstr]]", "obfstr::obfstr"), &deps);
+    let obf_macro = "obfstr::obfstr";
+
+    let mut runner = DnyRun::new(&TEMPLATE.replace("[[obfstr]]", obf_macro), &deps);
     runner.release(true);
     runner.cargo_config(
         r#"
@@ -274,7 +281,7 @@ rustflags = [
         "基线构建 stderr 非空:\n{ret_base}"
     );
     let bin_path: PathBuf = runner.bin_path();
-    println!("[1/2] 正在使用 rust-deobf 分析 obfstr 基线产物...");
+    println!("[1/2] 正在使用 rust-deobf 分析 {obf_macro} 基线产物...");
     let (base_recovered, base_out) = test_with_rust_deobf(&deobf_bin, &bin_path, 60)?;
     println!("obfstr 分析输出:\n{}", base_out.trim());
     assert_eq!(
@@ -285,14 +292,15 @@ rustflags = [
         base_recovered
     );
     // ── 阶段 2：防御验证（验证 obfstr2 在均衡档 s2! 下实现 0 解出）──────────
-    runner.reset_main_code(&TEMPLATE.replace("[[obfstr]]", "&*obfstr2::s2"));
+    let obf_macro = "&*obfstr2::s2";
+    runner.reset_main_code(&TEMPLATE.replace("[[obfstr]]", obf_macro));
     let ret_obf = runner.run(Some(Duration::from_secs(18)));
     assert!(ret_obf.ok, "防御构建/运行失败:\n{ret_obf}");
     assert!(
         ret_obf.stderr.is_empty(),
         "防御构建 stderr 非空:\n{ret_obf}"
     );
-    println!("[2/2] 正在使用 rust-deobf 分析 obfstr2 防御产物（预期 0 解出）...");
+    println!("[2/2] 正在使用 rust-deobf 分析 {obf_macro} 防御产物（预期 0 解出）...");
     let (obf_recovered, obf_out) = test_with_rust_deobf(&deobf_bin, &bin_path, 90)?;
     println!("obfstr2 分析输出:\n{}", obf_out.trim());
     assert!(

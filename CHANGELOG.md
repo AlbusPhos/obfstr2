@@ -10,6 +10,29 @@
 
 ---
 
+## [Unreleased]
+
+### Added
+- 反反汇编解密入口注入：`gen_anti_disasm_ast` 重构为可接收档位参数与强制区间；在 `ghost_state` 初始化后、主容器引用建立前固定注入一组 `anti_disassembly!`（`count 1..=2`、`garbage 1..=3`），即使档位概率未命中也在解密入口切断函数，仅在 `anti-disassembly` 特性下生效
+- 测试：`obfstr2-macros/src/tests/core.rs` 新增 `test_benchmark_chunking_distribution`，以 1B ~ 50MB 共 14 档载荷 × 200 轮统计 `get_take_size` 的块数、最小 / 最大 / 中位 / 均值与样本分块链
+- 测试：`tests/perf.rs` 重写为 8B / 32B / 256B / 1KB / 256KB / 1MB / 10MB 七档全尺度报告，按载荷自适应解密循环次数（512 / 64 / 16 / 2），测量缓存构建耗时、每次去混淆耗时、产物体积与 expand 字符数，按载荷分组输出并给出相对明文基线的增幅
+
+### Changed
+- 分块曲线改为 `get_take_size`：`base = ceil(i^2.4 × 0.3)`，取块区间 `base..=base × max(1, (remaining % 3 + 1) + i / 5)`，分块索引由 1 起改为 0 起；前端切分更细碎、后端块尺寸更快收敛，显著降低 MB 级载荷的块数与展开体积
+- 低延迟档强度上调：`max_latency` 30→36、`min_security` 7→30、`wrap_pct` 8→30、`junk_pct` 2→8、`anti_disasm_pct` 5→45；均衡档 `wrap_pct` 50→60、`anti_disasm_pct` 40→60；高强度档参数不变
+- 折叠树收敛收紧：`FOLD_GROUP_MIN` 4→2、`FOLD_GROUP_MAX` 12→6，根作用域折叠调用数上限由 ≤12 降至 ≤6
+- 加密原语池精简：移除收益偏低的 `wrapping_add` 与 `inv_mul` 两项原语；解密端移除对 `key` / `iv` 的冗余 `black_box` 局部绑定、`imse*` 解密后的整段 `black_box` 回写循环以及 `pkcs7_16` 的 `align` 常量包装，降低运行开销与展开噪声
+- 反反汇编注入判定由 `random >= pct` 跳过改为 `random <= pct` 注入；`anti_disasm2` 从 chunk body 末尾移至主容器借用建立之后，`anti_disasm1` / `anti_disasm3` 分列容器构造前后
+- HB2 隐写插入改进：候选语料片段超出剩余预算时按 UTF-8 字符边界截断后再插入，取代整段 `splice` + `saturating_sub`，避免插入量突破预算；截断点回退至非续字节，保证结果仍为合法 UTF-8，预算耗尽时提前结束插入
+- 文档：README / README_en 重写核心亮点（7 节合并为 5 节），"设计哲学与适用边界"更名为"适用场景与设计边界"，压缩宏表与特性表，补充 `LazyLock` 热路径缓存示例，并将性能基准整表替换为 8B ~ 10MB 七档实测数据（10MB 下 `b1!` / `b2!` / `b3!` 缓存构建耗时分别为 `CasualX obfbytes!` 的 1/33、1/16、1/7）
+- 文档：README / README_en 的 `TierParams` 表同步新默认值（`max_latency` / `min_security` / `wrap_pct` / `junk_pct` / `anti_disasm_pct`：低延迟档 `36` / `30` / `30` / `8` / `45`，均衡档 `wrap_pct` / `anti_disasm_pct` 为 `60` / `60`），原语数量由 `17+` 更新为 `16`，分块公式改为 `base = ceil(i^2.4 × 0.3)` 与对应随机区间，折叠树块组更新为 `2~6`，并修正 `b1!` 短载荷运行时开销表述
+- 测试：`tests/rust_deobf.rs` 抽出 `obf_macro` 变量复用日志标签，更新 `rust-deobf` 实测样本输出并移除过时测试结果尾注
+
+### Fixed
+- 修复加密选层的基础层随机区间上界遗漏：`1..3` 改为 `1..=3`，此前实际最多只叠加 2 个基础层；修复后低延迟档在提高 `min_security` 后具备完整的三层起步空间
+
+---
+
 ## [0.5.2] - 2026-11-23
 
 ### Added

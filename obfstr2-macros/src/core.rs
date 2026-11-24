@@ -195,14 +195,14 @@ impl TierParams {
 pub(crate) const TIER_LOW: TierParams = TierParams {
     force_heap: None,
     prefer_stack: true,
-    max_latency: 30,
-    min_security: 7,
+    max_latency: 36,
+    min_security: 30,
     security_factor: 1.0,
-    wrap_pct: 8,
-    junk_pct: 2,
+    wrap_pct: 30,
+    junk_pct: 8,
     cold_pct: 10,
     pad_short: false,
-    anti_disasm_pct: 5,
+    anti_disasm_pct: 45,
     anti_disasm_count_range: 1..=1,
     anti_disasm_garbage_range: 1..=5,
 };
@@ -214,11 +214,11 @@ pub(crate) const TIER_BALANCED: TierParams = TierParams {
     max_latency: 80,
     min_security: 63,
     security_factor: 1.0,
-    wrap_pct: 50,
+    wrap_pct: 60,
     junk_pct: 18,
     cold_pct: 20,
     pad_short: true,
-    anti_disasm_pct: 40,
+    anti_disasm_pct: 60,
     anti_disasm_count_range: 1..=2,
     anti_disasm_garbage_range: 4..=10,
 };
@@ -311,7 +311,7 @@ fn apply_single_layer(
     ))
 }
 
-/// 加密选层：随机 `1..3` 个基础层起步，组合安全度（`1 - Π(1 - security)`）
+/// 加密选层：随机 `1..=3` 个基础层起步，组合安全度（`1 - Π(1 - security)`）
 /// 达到 `tier.min_security` 即停；真 chunk 与垃圾块共用，保证过滤口径一致。
 ///
 /// 整个 chunk 仅生成一个根密钥种子，第 `i (i >= 1)` 层在编译期通过
@@ -358,7 +358,7 @@ pub(crate) fn encrypt_layers(
         data = push_layer(pkcs7, data, &mut layers)?;
     }
 
-    let op_count = random_range(1..3usize);
+    let op_count = random_range(1..=3usize);
     let target_layers = layers.len() + op_count;
     let mut combined_vulnerability = 1.0_f64;
     let mut current_combined_security = 0_u8;
@@ -431,21 +431,31 @@ fn gen_key_storage(
 }
 
 /// 生成反反汇编宏调用 AST
-fn gen_anti_disasm_ast(tier: &TierParams) -> TokenStream2 {
-    if !cfg!(feature = "anti-disassembly") || tier.anti_disasm_pct == 0 {
-        return TokenStream2::new();
-    }
+fn gen_anti_disasm_ast(
+    tier: Option<&TierParams>,
+    other: Option<(RangeInclusive<u8>, RangeInclusive<u8>)>,
+) -> TokenStream2 {
+    let mut ts = TokenStream2::new();
 
-    if random_range(0..100u8) >= tier.anti_disasm_pct {
-        return TokenStream2::new();
-    }
+    if cfg!(feature = "anti-disassembly") {
+        if let Some(tier) = tier
+            && random_range(0..100u8) <= tier.anti_disasm_pct
+        {
+            let count = random_range(tier.anti_disasm_count_range.clone());
+            let garbage = random_range(tier.anti_disasm_garbage_range.clone());
 
-    let count = random_range(tier.anti_disasm_count_range.clone());
-    let garbage = random_range(tier.anti_disasm_garbage_range.clone());
-
-    quote! {
-        ::obfstr2::anti_disassembly!(count = #count, garbage = #garbage);
+            ts.extend(quote! {
+                ::obfstr2::anti_disassembly!(count = #count, garbage = #garbage);
+            });
+        } else if let Some(other) = other {
+            let count = random_range(other.0);
+            let garbage = random_range(other.1);
+            ts.extend(quote! {
+            ::obfstr2::anti_disassembly!(count = #count, garbage = #garbage);
+            });
+        }
     }
+    ts
 }
 
 /// 逆序解密 fold：`(AST, Ident_out) = dec(ctx, Ident_in)` 串联。
@@ -486,7 +496,7 @@ fn build_dec_layers(
         let tag = format!("{tag_prefix}_{enc_idx}");
         let ct = layer.ct_len;
         let pt = layer.pt_len;
-        let anti_disasm = gen_anti_disasm_ast(tier);
+        let anti_disasm = gen_anti_disasm_ast(Some(tier),None);
 
         // 档位控制的非内联概率 + 单调累积：0=全内联，>=100=全包装。
         let wrap = random_range(0..100u8) < effective_wrap_pct(tier.wrap_pct, inline_count);
@@ -783,9 +793,9 @@ fn gen_integrity_check(
 }
 
 /// 单个折叠组的最小子节点数。
-const FOLD_GROUP_MIN: usize = 4;
+const FOLD_GROUP_MIN: usize = 2;
 /// 单个折叠组的最大子节点数。
-pub(crate) const FOLD_GROUP_MAX: usize = 12;
+pub(crate) const FOLD_GROUP_MAX: usize = 6;
 
 /// 一个待发射的块节点。
 ///
@@ -816,7 +826,7 @@ fn seal_chunk_group(
     } else {
         quote!()
     };
-    let anti_disasm = gen_anti_disasm_ast(tier);
+    let anti_disasm = gen_anti_disasm_ast(Some(tier),None);
 
     prelude.extend(quote! {
         #cold_attr
@@ -890,18 +900,21 @@ pub(crate) struct ObfuscatedBytes {
     pub(crate) main_is_heap: bool,
 }
 
+// 使前端更碎，后端收敛更强
+pub(crate) fn get_take_size(idx: usize, remaining: usize) -> usize {
+    let base: usize = (((idx as f64).powf(2.4) * 0.3).ceil() as usize).max(1);
+    random_range(
+        base..={ base.saturating_mul(((remaining % 3 + 1).saturating_add(idx / 5)).max(1)) },
+    )
+    .min(remaining)
+}
+
 /// 字节混淆编排入口。
-///
-/// # 动态密钥与错误密钥（有意设计）
 ///
 /// `key_pair` 为 `Some` 时，编译期以 `build_key` 派生初始 `sim_ghost`，运行期以
 /// `run_key` 派生 `ghost_state` 解掩码块密钥。若运行期 `run_key` 与编译期
 /// `build_key` 不一致，解密链将输出错误字节，并可能触发完整性谓词的
 /// `wipe_data()` / 容器长度假设，最终表现为未定义行为（UB）。
-///
-/// 该行为是刻意保留的对抗设计：模拟执行、符号执行与切片执行无法仅凭控制流
-/// 判定密钥是否匹配，错误密钥下的不可预测状态会污染分析状态空间。调用方必须
-/// 保证 `run_key` 与 `build_key` 在运行期逐字节一致。
 pub(crate) fn build_obfuscated_bytes(
     mut input: Vec<u8>,
     tier: TierParams,
@@ -912,10 +925,9 @@ pub(crate) fn build_obfuscated_bytes(
     let ghost_init: u64 = random();
 
     let mut work_units: Vec<(Vec<u8>, bool)> = Vec::new();
-    let mut i = 1;
+    let mut i = 0;
     while !input.is_empty() {
-        let base: usize = (i as f64).powf(1.4).ceil() as usize;
-        let take_size = random_range({ 2 * base }..{ 8 * base }).min(input.len());
+        let take_size = get_take_size(i, input.len());
         let real_data: Vec<u8> = input.drain(..take_size).collect();
         let pt_len = real_data.len();
         work_units.push((real_data, false));
@@ -1177,22 +1189,23 @@ pub(crate) fn build_obfuscated_bytes(
         },
     };
 
-    let anti_disasm1 = gen_anti_disasm_ast(&tier);
-    let anti_disasm2 = gen_anti_disasm_ast(&tier);
+    let anti_disasm1 = gen_anti_disasm_ast(Some(&tier),None);
+    let anti_disasm2 = gen_anti_disasm_ast(Some(&tier),None);
+    let anti_disasm3 = gen_anti_disasm_ast(None, Some((1..=2, 1..=3))); // 强制在解密开始前用花指令切断函数
 
     Ok(ObfuscatedBytes {
         tokens: quote! {
             {
                 #chunk_prelude
                 #anti_disasm1
-
                 let mut #raw_bytes = #main_ty::new();
                 #ghost_init_ast
+                #anti_disasm3
                 #[allow(unused_variables)]
                 let #bytes: &mut #main_ty = &mut #raw_bytes;
+                #anti_disasm2
                 #chunk_body
 
-                #anti_disasm2
                 ::core::hint::black_box(#ghost_state);
                 #raw_bytes
             }
