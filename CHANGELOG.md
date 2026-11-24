@@ -30,6 +30,7 @@
 
 ### Fixed
 - 修复加密选层的基础层随机区间上界遗漏：`1..3` 改为 `1..=3`，此前实际最多只叠加 2 个基础层；修复后低延迟档在提高 `min_security` 后具备完整的三层起步空间
+- 修复 `obfstr2-macros/src/tests/core.rs` 分块统计测试的 Clippy 告警：改用 `f64::total_cmp` 替代 `partial_cmp(...).unwrap()`，并以 `usize::is_multiple_of(2)` 替代取模判断
 
 ---
 

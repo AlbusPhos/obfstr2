@@ -323,9 +323,9 @@ fn calc_median(data: &mut [f64]) -> f64 {
     if data.is_empty() {
         return 0.0;
     }
-    data.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    data.sort_by(|a, b| a.total_cmp(b));
     let mid = data.len() / 2;
-    if data.len() % 2 == 0 {
+    if data.len().is_multiple_of(2) {
         (data[mid - 1] + data[mid]) / 2.0
     } else {
         data[mid]
@@ -350,14 +350,16 @@ fn simulate_chunks(total_size: usize) -> Vec<usize> {
 fn compute_metrics(chunks: &[usize]) -> RunMetrics {
     let mut float_chunks: Vec<f64> = chunks.iter().map(|&c| c as f64).collect();
     let count = float_chunks.len() as f64;
-    let min = *float_chunks
+    let min = float_chunks
         .iter()
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
-        .unwrap();
-    let max = *float_chunks
+        .copied()
+        .min_by(f64::total_cmp)
+        .expect("分块序列不应为空");
+    let max = float_chunks
         .iter()
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
-        .unwrap();
+        .copied()
+        .max_by(f64::total_cmp)
+        .expect("分块序列不应为空");
     let mean = calc_mean(&float_chunks);
     let median = calc_median(&mut float_chunks);
     RunMetrics {
