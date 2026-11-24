@@ -496,7 +496,7 @@ fn build_dec_layers(
         let tag = format!("{tag_prefix}_{enc_idx}");
         let ct = layer.ct_len;
         let pt = layer.pt_len;
-        let anti_disasm = gen_anti_disasm_ast(Some(tier),None);
+        let anti_disasm = gen_anti_disasm_ast(Some(tier), None);
 
         // 档位控制的非内联概率 + 单调累积：0=全内联，>=100=全包装。
         let wrap = random_range(0..100u8) < effective_wrap_pct(tier.wrap_pct, inline_count);
@@ -826,7 +826,7 @@ fn seal_chunk_group(
     } else {
         quote!()
     };
-    let anti_disasm = gen_anti_disasm_ast(Some(tier),None);
+    let anti_disasm = gen_anti_disasm_ast(Some(tier), None);
 
     prelude.extend(quote! {
         #cold_attr
@@ -1189,8 +1189,8 @@ pub(crate) fn build_obfuscated_bytes(
         },
     };
 
-    let anti_disasm1 = gen_anti_disasm_ast(Some(&tier),None);
-    let anti_disasm2 = gen_anti_disasm_ast(Some(&tier),None);
+    let anti_disasm1 = gen_anti_disasm_ast(Some(&tier), None);
+    let anti_disasm2 = gen_anti_disasm_ast(Some(&tier), None);
     let anti_disasm3 = gen_anti_disasm_ast(None, Some((1..=2, 1..=3))); // 强制在解密开始前用花指令切断函数
 
     Ok(ObfuscatedBytes {

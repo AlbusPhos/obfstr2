@@ -8,7 +8,10 @@
 
 #![allow(clippy::expect_used)]
 
-use crate::core::{effective_wrap_pct, encrypt_layers, fold_chunk_nodes, get_take_size, ChunkNode, TierParams, FOLD_GROUP_MAX, TIER_BALANCED, TIER_HIGH, TIER_LOW};
+use crate::core::{
+    ChunkNode, FOLD_GROUP_MAX, TIER_BALANCED, TIER_HIGH, TIER_LOW, TierParams, effective_wrap_pct,
+    encrypt_layers, fold_chunk_nodes, get_take_size,
+};
 use crate::crypto::CRYPTOS;
 use lib_unknown::rand::core::random;
 use proc_macro2::TokenStream as TokenStream2;
@@ -285,7 +288,6 @@ fn simulate_crypto_selection_across_tiers() {
     }
 }
 
-
 #[derive(Debug, Clone)]
 struct RunMetrics {
     count: f64,
@@ -311,12 +313,16 @@ fn format_bytes(bytes: f64) -> String {
 }
 
 fn calc_mean(data: &[f64]) -> f64 {
-    if data.is_empty() { return 0.0; }
+    if data.is_empty() {
+        return 0.0;
+    }
     data.iter().sum::<f64>() / data.len() as f64
 }
 
 fn calc_median(data: &mut [f64]) -> f64 {
-    if data.is_empty() { return 0.0; }
+    if data.is_empty() {
+        return 0.0;
+    }
     data.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mid = data.len() / 2;
     if data.len() % 2 == 0 {
@@ -344,11 +350,23 @@ fn simulate_chunks(total_size: usize) -> Vec<usize> {
 fn compute_metrics(chunks: &[usize]) -> RunMetrics {
     let mut float_chunks: Vec<f64> = chunks.iter().map(|&c| c as f64).collect();
     let count = float_chunks.len() as f64;
-    let min = *float_chunks.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-    let max = *float_chunks.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+    let min = *float_chunks
+        .iter()
+        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap();
+    let max = *float_chunks
+        .iter()
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap();
     let mean = calc_mean(&float_chunks);
     let median = calc_median(&mut float_chunks);
-    RunMetrics { count, min, max, median, mean }
+    RunMetrics {
+        count,
+        min,
+        max,
+        median,
+        mean,
+    }
 }
 
 /// 格式化分块链：块数少时全部打印，块数多时展示前5个和后3个，省略中间部分
@@ -357,8 +375,14 @@ fn format_chain(chunks: &[usize]) -> String {
         let items: Vec<String> = chunks.iter().map(|&c| format_bytes(c as f64)).collect();
         format!("(共 {:>2} 块): [{}]", chunks.len(), items.join(" -> "))
     } else {
-        let head: Vec<String> = chunks[..14].iter().map(|&c| format_bytes(c as f64)).collect();
-        let tail: Vec<String> = chunks[chunks.len() - 14..].iter().map(|&c| format_bytes(c as f64)).collect();
+        let head: Vec<String> = chunks[..14]
+            .iter()
+            .map(|&c| format_bytes(c as f64))
+            .collect();
+        let tail: Vec<String> = chunks[chunks.len() - 14..]
+            .iter()
+            .map(|&c| format_bytes(c as f64))
+            .collect();
         format!(
             "(共 {:>2} 块): [{} -> ... (省略 {} 块) ... -> {}]",
             chunks.len(),
@@ -381,18 +405,24 @@ fn test_benchmark_chunking_distribution() {
         128,
         512,
         1024,
-        10 * 1024,          // 10 KB
-        100 * 1024,         // 100 KB
-        1024 * 1024,        // 1 MB
-        10 * 1024 * 1024,   // 10 MB
-        50 * 1024 * 1024,   // 50 MB
+        10 * 1024,        // 10 KB
+        100 * 1024,       // 100 KB
+        1024 * 1024,      // 1 MB
+        10 * 1024 * 1024, // 10 MB
+        50 * 1024 * 1024, // 50 MB
     ];
     let num_runs = 200;
 
     println!("\n{:=<96}", "");
     println!(
         "{:<10} | {:<6} | {:>10} | {:>12} | {:>12} | {:>14} | {:>14}",
-        "Payload", "Metric", "块数(Count)", "最小块(Min)", "最大块(Max)", "中位数(Median)", "平均数(Mean)"
+        "Payload",
+        "Metric",
+        "块数(Count)",
+        "最小块(Min)",
+        "最大块(Max)",
+        "中位数(Median)",
+        "平均数(Mean)"
     );
     println!("{:-<96}", "");
 

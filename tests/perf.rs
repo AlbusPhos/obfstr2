@@ -183,7 +183,6 @@ fn fmt_dur(d: Duration) -> String {
 }
 
 fn render_report(rows: &[Row]) {
-
     eprintln!(
         "| Payload | 用例 | 每次去混淆耗时 | 缓存构建耗时 | 产物二进制（未 strip） | expand 字符数 |"
     );
@@ -257,7 +256,6 @@ fn perf_report_release() {
     let warm = runner.build(timeout());
     assert!(warm.ok, "依赖预热构建失败:\n{warm}");
     eprintln!(">>> 预热完成");
-
 
     let mut all_rows: Vec<Row> = Vec::with_capacity(SIZES.len() * PER_CHUNK);
 

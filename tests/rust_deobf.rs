@@ -201,7 +201,7 @@ fn test_with_rust_deobf(
 //   compressed strings (recover_blobs): 0 strings  streams=0  seconds=0.0
 //   static stack strings (recover_stackstrings): 0 strings  seconds=0.0
 //   Rust literals (recover_rust_strings): 0 strings  unexplained=1  seconds=0.0
-// 
+//
 // == decoded strings ==
 //   10.66.12.7:8443   [ip]
 //       function 0x201874  (emulation)
@@ -221,7 +221,7 @@ fn test_with_rust_deobf(
 //   compressed strings (recover_blobs): 0 strings  streams=0  seconds=0.0
 //   static stack strings (recover_stackstrings): 0 strings  seconds=0.3
 //   Rust literals (recover_rust_strings): 30 strings  unexplained=70  seconds=0.1
-// 
+//
 // == decoded strings ==
 //   `abcdefghijkl
 //       function 0x2059e6  (emulation)
