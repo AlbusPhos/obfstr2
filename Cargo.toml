@@ -1,6 +1,6 @@
 [package]
 name = "obfstr2"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 resolver = "2"
 rust-version = "1.92"
@@ -20,7 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 
 [dependencies]
-obfstr2-macros = { version = "=0.5.2", path = "obfstr2-macros" }
+obfstr2-macros = { version = "=0.5.3", path = "obfstr2-macros" }
 lib-unknown = { version = "=0.5.0", default-features = false, features = ["crypto", "types", "encoding", "hash-core", "lazy"] }
 anti-disassembly = { version = "0.1.0", optional = true, features = ["red-zone-safety"] }
 

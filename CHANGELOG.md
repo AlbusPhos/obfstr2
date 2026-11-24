@@ -10,7 +10,7 @@
 
 ---
 
-## [Unreleased]
+## [0.5.3] - 2026-11-24
 
 ### Added
 - 反反汇编解密入口注入：`gen_anti_disasm_ast` 重构为可接收档位参数与强制区间；在 `ghost_state` 初始化后、主容器引用建立前固定注入一组 `anti_disassembly!`（`count 1..=2`、`garbage 1..=3`），即使档位概率未命中也在解密入口切断函数，仅在 `anti-disassembly` 特性下生效
@@ -191,7 +191,8 @@
 - 引入现代对称密码学设计要素（SPN、动态 S 盒 / P 盒、ARX、雪崩效应）以对抗 `angr` 等符号执行工具
 - 字符串 / 字节 / CStr 容器在离开作用域时执行 Volatile 擦除
 
-[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/AlbusPhos/obfstr2/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/AlbusPhos/obfstr2/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/AlbusPhos/obfstr2/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/AlbusPhos/obfstr2/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/AlbusPhos/obfstr2/compare/v0.4.4...v0.5.0
