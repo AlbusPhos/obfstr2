@@ -9,7 +9,7 @@
 use super::b_full_keyed;
 use crate::core::{TIER_BALANCED, TIER_HIGH, TIER_LOW, TierParams};
 use crate::parse::{KeyPair, ParsedWide};
-use crate::utils::{wide_to_le, wrap_wide};
+use crate::utils::{wide_to_le, wrap_primitive};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
@@ -27,7 +27,7 @@ fn w_impl(
     } else {
         quote!(::obfstr2::types::buffer::StackU16)
     };
-    Ok(wrap_wide(obf.tokens, n, main_type_path))
+    Ok(wrap_primitive(obf.tokens, n, main_type_path))
 }
 
 pub(crate) fn w1(parsed: ParsedWide) -> Result<TokenStream2, String> {

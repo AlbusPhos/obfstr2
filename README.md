@@ -13,7 +13,7 @@
 
 一行宏即用的 Rust 编译期多态安全混淆框架。字面量输入，安全表达式输出，所有加密与控制流形变均在编译期完成。每次编译均生成截然不同的二进制特征与密文形态，彻底挫败静态特征扫描、Mandiant `FLOSS` 以及针对 Rust 定制的专用去混淆器（如 [`rust-deobf`](https://github.com/VAHPEM/rust-deobf)）。
 
-全面覆盖**字符串、C 字符串、UTF-16 宽字符串、字节数组、外部文件、整数、浮点数及格式化字符串**。支持解引用直取裸值或存入受控容器；所有容器在离开作用域（`Drop`）时自动执行 Volatile 内存清零，防止敏感明文残留在栈或堆中。
+全面覆盖**字符串、C 字符串、UTF-16 宽字符串、字节数组、u32 / u64 定宽数组、外部文件、整数、浮点数及格式化字符串**。支持解引用直取裸值或存入受控容器；所有容器在离开作用域（`Drop`）时自动执行 Volatile 内存清零，防止敏感明文残留在栈或堆中。
 
 ## 目录
 - [快速开始](#快速开始)
@@ -29,7 +29,7 @@
 ## 快速开始
 ```toml
 [dependencies]
-obfstr2 = "0.5"
+obfstr2 = "0.6"
 ```
 所有混淆宏均以数字后缀区分强度档位：`1`（低延迟）、`2`（推荐均衡）、`3`（高强度抗逆向）；另有 [`*_user!`](#自定义强度档-_user) 自定义档与 [`*_key!`](#动态密钥档-_key) 动态密钥档。
 
@@ -134,6 +134,8 @@ fn main() {
 |:------------------------|:---------------------------------------------------------|:---------------------------------------------------------------|:-----------------------------------------------------------------------------------------------------|
 | `s1!` ~ `s3!`           | `"hello"`                                                | `StackStr<N>` / `HeapStr<N>`（`Deref<Target = str>`）          | UTF-8 字符串容器。                                                                                   |
 | `b1!` ~ `b3!`           | `b"abc"` 或 `[0x41, 66]`                                 | `StackBytes<N>` / `HeapBytes<N>`（`Deref<Target = [u8]>`）     | 数组元素范围 `0..=255`。                                                                             |
+| `d1!` ~ `d3!`           | `[0xDEAD_BEEF, 1u32]`                                    | `StackU32<N>` / `HeapU32<N>`（`Deref<Target = [u32]>`）        | `u32` 整数字面量数组；按小端还原，`N` 为元素个数。                                                   |
+| `q1!` ~ `q3!`           | `[0x0123_4567_89AB_CDEF, 1u64]`                          | `StackU64<N>` / `HeapU64<N>`（`Deref<Target = [u64]>`）        | `u64` 整数字面量数组；按小端还原，`N` 为元素个数。                                                   |
 | `cs1!` ~ `cs3!`         | `c"..."` / `"..."` / `b"..."`                            | `StackCStr<N>` / `HeapCStr<N>`（`Deref<Target = CStr>`）       | 自动追加结尾 `\0`，运行时零拷贝还原；非 UTF-8 请用 `b"..."`；**严禁内部含 NUL**。                    |
 | `w1!` ~ `w3!`           | `"a\0b"`                                                 | `StackU16<N>` / `HeapU16<N>`（`Deref<Target = [u16]>`）        | 编译期转 UTF-16；**不追加**结尾 NUL，**允许**内部含 NUL（适用于长度前缀 API）。                      |
 | `cw1!` ~ `cw3!`         | `"kernel32.dll"`                                         | `StackU16<N>` / `HeapU16<N>`（`Deref<Target = [u16]>`）        | 编译期转 UTF-16 并**自动追加结尾 `0u16`**；**严禁内部含 NUL**；`as_ptr()` 可直投 Win32 `PCWSTR`。    |
@@ -188,13 +190,14 @@ fn main() {
 
 ### 动态密钥档 `*_key!`
 将编译期加密密钥与运行期解密密钥分离，二进制产物中不留存完整密钥：
-```rust
+```rust ,no_run
 use obfstr2::s_key;
-fn get_server_key() -> &'static [u8] { "obfstr2-demo-key".as_bytes() }
 
 fn main() {
+    // 从服务器或环境变量获取用于解密的密钥
+    let key = std::env::var("OBFSTR2_TEST_KEY").expect("请设置 OBFSTR2_TEST_KEY");
     let s = s_key!(
-        { build_key: "obfstr2-demo-key", run_key: get_server_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY"), run_key: key.as_bytes() },
         "hello",
     );
     assert_eq!(&*s, "hello");
@@ -241,7 +244,8 @@ fn main() {
 | `force_stack`             |  ❌  | 强制各容器宏的主容器走栈（超 `STACK_BUDGET` 编译期报错）；与 `force_heap` 互斥。                                      |
 | `budget-1k` ~ `budget-8m` |  ❌  | 栈预算上限控制：可选 `1k`, `4k`（默认）, `16k`, `64k`, `256k`, `512k`, `1m`, `4m`, `8m`（多选时取最大档）。           |
 
-> **纯栈裸机模式（无 `alloc`、无花指令）：** `obfstr2 = { version = "0.5", default-features = false }`  
+> **纯栈裸机模式（无 `alloc`、无花指令）：** `obfstr2 = { version = "0.6", default-features = false }`
+>
 > *注意：`force_heap` 与 `force_stack` 互斥，测试时请勿直接使用 `--all-features`（参见[贡献与开发验证](#贡献与开发验证)）。*
 
 ---
@@ -316,6 +320,10 @@ fn main() {
 
 **常规测试与校准套件：**
 ```bash
+# 动态密钥档测试需设置 OBFSTR2_TEST_KEY：build_key 在编译期读取，
+# run_key 在运行期读取，二者必须一致。
+export OBFSTR2_TEST_KEY='obfstr2-test-key-0123456789abcdef'
+
 # 基础功能、编译期拒绝与裸机 no_std 验证（需安装 x86_64-unknown-none target）
 cargo test --test smoke --test s_fmt --test compile_fail --test nostd
 cd obfstr2-macros && cargo test --lib
@@ -334,6 +342,9 @@ cargo test --test rust_deobf -- main --ignored --nocapture
 
 **提交前代码规范检查：**
 ```bash
+# clippy --all-targets 会编译含 env! 的动态密钥测试，需设置同名环境变量。
+export OBFSTR2_TEST_KEY='obfstr2-test-key-0123456789abcdef'
+
 cargo fmt --all -- --check
 cd obfstr2-macros && cargo fmt --all -- --check
 cargo clippy --all-targets --features alloc,anti-disassembly -- -D warnings

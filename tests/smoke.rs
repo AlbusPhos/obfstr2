@@ -5,6 +5,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! 根 crate 冒烟测试：三档宏、`*_user!` 与 `*_key!` 家族的小载荷 roundtrip。
+//!
+//! `*_key!` / `*_key_user!` 用例要求设置环境变量 `OBFSTR2_TEST_KEY`：
+//! `build_key` 在编译期经 `env!` 读取，`run_key` 在运行期经 `std::env::var` 读取，
+//! 两者必须一致。
 use obfstr2::*;
 
 macro_rules! assert_obf_s {
@@ -123,6 +127,93 @@ fn bytes_roundtrip() {
             ]
         );
     }
+}
+
+#[test]
+fn u32_array_all_tiers_roundtrip() {
+    macro_rules! check {
+        ([$($v:expr),* $(,)?]) => {{
+            let expected: &[u32] = &[$($v),*];
+            let (a, b, c) = (d1!([$($v),*]), d2!([$($v),*]), d3!([$($v),*]));
+            assert_eq!(&*a, expected, "d1 roundtrip failed");
+            assert_eq!(&*b, expected, "d2 roundtrip failed");
+            assert_eq!(&*c, expected, "d3 roundtrip failed");
+            assert_eq!(&*a, &*b);
+            assert_eq!(&*b, &*c);
+            assert_eq!(a.len(), expected.len());
+        }};
+    }
+
+    check!([]);
+    check!([0u32]);
+    check!([1u32, 2, 3]);
+    check!([0, 0xDEAD_BEEF, 0xFFFF_FFFFu32]);
+}
+
+#[test]
+fn u64_array_all_tiers_roundtrip() {
+    macro_rules! check {
+        ([$($v:expr),* $(,)?]) => {{
+            let expected: &[u64] = &[$($v),*];
+            let (a, b, c) = (q1!([$($v),*]), q2!([$($v),*]), q3!([$($v),*]));
+            assert_eq!(&*a, expected, "q1 roundtrip failed");
+            assert_eq!(&*b, expected, "q2 roundtrip failed");
+            assert_eq!(&*c, expected, "q3 roundtrip failed");
+            assert_eq!(&*a, &*b);
+            assert_eq!(&*b, &*c);
+            assert_eq!(a.len(), expected.len());
+        }};
+    }
+
+    check!([]);
+    check!([0u64]);
+    check!([1u64, 2, 3]);
+    check!([0, 0x0123_4567_89AB_CDEFu64, 0xFFFF_FFFF_FFFF_FFFFu64]);
+}
+
+#[test]
+fn word_array_user_and_key_roundtrip() {
+    assert_eq!(&*d_user!({}, [1u32, 2, 3]), &[1u32, 2, 3][..]);
+    assert_eq!(
+        &*d_user!({ prefer_stack: true }, [0, 0xDEAD_BEEF]),
+        &[0u32, 0xDEAD_BEEF][..]
+    );
+    assert_eq!(&*q_user!({}, [1u64, 2, 3]), &[1u64, 2, 3][..]);
+    assert_eq!(
+        &*q_user!({ prefer_stack: true }, [0, 0x0123_4567_89AB_CDEF]),
+        &[0u64, 0x0123_4567_89AB_CDEF][..]
+    );
+
+    assert_eq!(
+        &*d_key!(
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
+            [1u32, 2, 3]
+        ),
+        &[1u32, 2, 3][..]
+    );
+    assert_eq!(
+        &*q_key!(
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
+            [1u64, 2, 3]
+        ),
+        &[1u64, 2, 3][..]
+    );
+    assert_eq!(
+        &*d_key_user!(
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
+            { max_latency: 50 },
+            [4u32, 5, 6]
+        ),
+        &[4u32, 5, 6][..]
+    );
+    assert_eq!(
+        &*q_key_user!(
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
+            { max_latency: 50 },
+            [4u64, 5, 6]
+        ),
+        &[4u64, 5, 6][..]
+    );
 }
 
 #[test]
@@ -393,6 +484,16 @@ fn macro_metavariable_forwarding_works() {
             cw1!($v)
         };
     }
+    macro_rules! fwd_d {
+        ($v:literal) => {
+            d1!([$v, 2u32])
+        };
+    }
+    macro_rules! fwd_q {
+        ($v:literal) => {
+            q1!([$v, 2u64])
+        };
+    }
 
     assert_eq!(&*fwd_s!("hello"), "hello");
     assert_eq!(&*fwd_b!(b"hi"), &b"hi"[..]);
@@ -406,6 +507,8 @@ fn macro_metavariable_forwarding_works() {
     assert_eq!(fwd_neg_f!(0.0f32).to_bits(), (-0.0f32).to_bits());
     assert_eq!(&*fwd_w!("hi"), &[0x68u16, 0x69][..]);
     assert_eq!(&*fwd_cw!("hi"), &[0x68u16, 0x69, 0][..]);
+    assert_eq!(&*fwd_d!(1u32), &[1u32, 2][..]);
+    assert_eq!(&*fwd_q!(1u64), &[1u64, 2][..]);
 }
 
 #[test]
@@ -497,33 +600,48 @@ fn user_macro_forwarding_through_user_macro_rules() {
 }
 
 // ── 动态密钥档：正确 run_key 的端到端 roundtrip ────────────────────────────
+//
+// 运行本组 `*_key!` / `*_key_user!` 测试前必须设置环境变量 `OBFSTR2_TEST_KEY`：
+//
+// ```bash
+// OBFSTR2_TEST_KEY='obfstr2-test-key-0123456789abcdef' cargo test --test smoke
+// ```
+//
+// `build_key` 在编译期通过 `env!` 读取，`run_key` 在运行期通过 `std::env::var`
+// 读取；两者必须一致，否则解密链会输出乱码或触发完整性自擦除（测试失败属预期）。
+const KEY_ENV: &str = "OBFSTR2_TEST_KEY";
 
-const KEY_STR: &str = "obfstr2-test-key-0123456789abcdef";
-
-/// 运行期读取密钥（Path/Call 形态，绕开编译期字面量拒绝）。
+/// 运行期读取密钥（`std::env::var` 形态，绕开编译期字面量拒绝）。
+///
+/// 使用 `OnceLock` 缓存，返回 `&'static [u8]`，避免在宏展开处借用临时 `Vec`。
 fn run_key() -> &'static [u8] {
-    KEY_STR.as_bytes()
+    static KEY: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        std::env::var(KEY_ENV)
+            .unwrap_or_else(|_| panic!("运行 *_key! 测试前请设置环境变量 `{KEY_ENV}`"))
+            .into_bytes()
+    })
 }
 
 #[test]
 fn key_macros_roundtrip() {
     assert_eq!(
         &*s_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             ""
         ),
         ""
     );
     assert_eq!(
         &*s_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             "hello"
         ),
         "hello"
     );
     assert_eq!(
         &*s_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             "你好，世界🦀"
         ),
         "你好，世界🦀"
@@ -531,14 +649,14 @@ fn key_macros_roundtrip() {
 
     assert_eq!(
         &*b_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             b"abc"
         ),
         b"abc"
     );
     assert_eq!(
         &*b_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             [0x61, 98, 99]
         ),
         &[0x61u8, 0x62, 0x63][..]
@@ -546,7 +664,7 @@ fn key_macros_roundtrip() {
 
     assert_eq!(
         &*f_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             "assets/fixture.bin"
         ),
         b"secret"
@@ -554,7 +672,7 @@ fn key_macros_roundtrip() {
 
     assert_eq!(
         s_fmt_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             "hello, {}!",
             "world"
         ),
@@ -563,14 +681,14 @@ fn key_macros_roundtrip() {
 
     assert_eq!(
         i_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             42u8
         ),
         42u8
     );
     assert_eq!(
         i_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             -1
         ),
         -1i32
@@ -578,7 +696,7 @@ fn key_macros_roundtrip() {
 
     assert_eq!(
         fl_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             3.15f64
         )
         .to_bits(),
@@ -587,7 +705,7 @@ fn key_macros_roundtrip() {
 
     assert_eq!(
         &*cs_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             c"/bin/sh"
         ),
         c"/bin/sh"
@@ -595,14 +713,14 @@ fn key_macros_roundtrip() {
 
     assert_eq!(
         &*w_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             "a\0b"
         ),
         &[0x61u16, 0, 0x62][..]
     );
 
     let cw = cw_key!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         "kernel32.dll"
     );
     assert_eq!(
@@ -615,7 +733,7 @@ fn key_macros_roundtrip() {
 #[test]
 fn key_user_macros_roundtrip() {
     let s = s_key_user!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         { max_latency: 50, min_security: 60, prefer_stack: true },
         "hello"
     );
@@ -623,7 +741,7 @@ fn key_user_macros_roundtrip() {
 
     assert_eq!(
         &*b_key_user!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             { prefer_stack: true },
             b"abc"
         ),
@@ -632,7 +750,7 @@ fn key_user_macros_roundtrip() {
 
     assert_eq!(
         &*f_key_user!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             { prefer_stack: true },
             "assets/fixture.bin"
         ),
@@ -641,7 +759,7 @@ fn key_user_macros_roundtrip() {
 
     assert_eq!(
         s_fmt_key_user!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             { max_latency: 50 },
             "hi, {name}!",
             name = "world"
@@ -651,7 +769,7 @@ fn key_user_macros_roundtrip() {
 
     assert_eq!(
         i_key_user!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             { max_latency: 50 },
             42u32
         ),
@@ -660,7 +778,7 @@ fn key_user_macros_roundtrip() {
 
     assert_eq!(
         fl_key_user!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             { max_latency: 50 },
             3.15f32
         )
@@ -670,7 +788,7 @@ fn key_user_macros_roundtrip() {
 
     assert_eq!(
         &*cs_key_user!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             { prefer_stack: true },
             c"/bin/sh"
         ),
@@ -679,7 +797,7 @@ fn key_user_macros_roundtrip() {
 
     assert_eq!(
         &*w_key_user!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             { prefer_stack: true },
             "a\0b"
         ),
@@ -687,7 +805,7 @@ fn key_user_macros_roundtrip() {
     );
 
     let cw = cw_key_user!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         { min_security: 60 },
         "kernel32.dll"
     );
@@ -700,13 +818,10 @@ fn key_user_macros_roundtrip() {
 
 #[test]
 fn key_build_key_from_env_roundtrip() {
-    // build_key 走 env!：过程宏展开期读取，并在产物中注册 Cargo 环境依赖。
-    // run_key 必须来自运行期表达式（这里用函数调用，避免被编译期字面量校验拒绝）。
-    fn pkg_name_bytes() -> &'static [u8] {
-        env!("CARGO_PKG_NAME").as_bytes()
-    }
+    // 需要先设置 OBFSTR2_TEST_KEY：build_key 走 env!，过程宏展开期读取并注册 Cargo
+    // 环境依赖；run_key 走运行期 std::env::var（由 run_key() 读取），符合动态密钥威胁模型。
     let s = s_key!(
-        { build_key: env!("CARGO_PKG_NAME"), run_key: pkg_name_bytes() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         "env-keyed"
     );
     assert_eq!(&*s, "env-keyed");
@@ -756,12 +871,12 @@ fn test_lib_unknown() {
 use core::any::{Any, TypeId, type_name, type_name_of_val};
 #[cfg(feature = "alloc")]
 use obfstr2::types::{
-    buffer::{HeapBytes, HeapU16},
+    buffer::{HeapBytes, HeapU16, HeapU32, HeapU64},
     cstr::HeapCStr,
     str::HeapStr,
 };
 use obfstr2::types::{
-    buffer::{StackBytes, StackU16},
+    buffer::{StackBytes, StackU16, StackU32, StackU64},
     cstr::StackCStr,
     str::StackStr,
 };
@@ -792,7 +907,7 @@ fn assert_container<Expected: 'static, Actual: 'static>(
 #[test]
 #[cfg(feature = "alloc")]
 fn test_user_force_heap_matrix() {
-    use obfstr2::{b_user, cs_user, cw_user, f_user, s_user, w_user};
+    use obfstr2::{b_user, cs_user, cw_user, d_user, f_user, q_user, s_user, w_user};
 
     // ── 1a. *_user! + force_heap: true（短载荷 <= 16B）──
     let s = s_user!({ force_heap: true }, "123");
@@ -802,6 +917,14 @@ fn test_user_force_heap_matrix() {
     let b = b_user!({ force_heap: true }, b"123");
     assert_container::<HeapBytes<3>, _>(&b, true, "b_user(force_heap: true)");
     assert_eq!(&*b, b"123");
+
+    let d = d_user!({ force_heap: true }, [1u32, 2, 3]);
+    assert_container::<HeapU32<3>, _>(&d, true, "d_user(force_heap: true)");
+    assert_eq!(&*d, &[1u32, 2, 3][..]);
+
+    let q = q_user!({ force_heap: true }, [1u64, 2, 3]);
+    assert_container::<HeapU64<3>, _>(&q, true, "q_user(force_heap: true)");
+    assert_eq!(&*q, &[1u64, 2, 3][..]);
 
     let f = f_user!({ force_heap: true }, "assets/fixture.bin");
     assert_container::<HeapBytes<6>, _>(&f, true, "f_user(force_heap: true)");
@@ -821,7 +944,7 @@ fn test_user_force_heap_matrix() {
 
     // ── 1b. *_key_user! + force_heap: Some(true)（含空载荷 0B 边界）──
     let sk = s_key_user!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         { force_heap: Some(true) },
         ""
     );
@@ -829,15 +952,31 @@ fn test_user_force_heap_matrix() {
     assert_eq!(&*sk, "");
 
     let bk = b_key_user!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         { force_heap: Some(true) },
         b"123"
     );
     assert_container::<HeapBytes<3>, _>(&bk, true, "b_key_user(Some(true))");
     assert_eq!(&*bk, b"123");
 
+    let dk = d_key_user!(
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
+        { force_heap: Some(true) },
+        [1u32, 2, 3]
+    );
+    assert_container::<HeapU32<3>, _>(&dk, true, "d_key_user(Some(true))");
+    assert_eq!(&*dk, &[1u32, 2, 3][..]);
+
+    let qk = q_key_user!(
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
+        { force_heap: Some(true) },
+        [1u64, 2, 3]
+    );
+    assert_container::<HeapU64<3>, _>(&qk, true, "q_key_user(Some(true))");
+    assert_eq!(&*qk, &[1u64, 2, 3][..]);
+
     let fk = f_key_user!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         { force_heap: Some(true) },
         "assets/fixture.bin"
     );
@@ -845,7 +984,7 @@ fn test_user_force_heap_matrix() {
     assert_eq!(&*fk, b"secret");
 
     let csk = cs_key_user!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         { force_heap: Some(true) },
         "123"
     );
@@ -853,7 +992,7 @@ fn test_user_force_heap_matrix() {
     assert_eq!(&*csk, c"123");
 
     let wk = w_key_user!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         { force_heap: Some(true) },
         "123"
     );
@@ -861,7 +1000,7 @@ fn test_user_force_heap_matrix() {
     assert_eq!(&*wk, &[0x31u16, 0x32, 0x33][..]);
 
     let cwk = cw_key_user!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         { force_heap: Some(true) },
         "123"
     );
@@ -871,7 +1010,7 @@ fn test_user_force_heap_matrix() {
 
 #[test]
 fn test_user_force_stack_matrix() {
-    use obfstr2::{b_user, cs_user, cw_user, f_user, s_user, w_user};
+    use obfstr2::{b_user, cs_user, cw_user, d_user, f_user, q_user, s_user, w_user};
 
     const LONG_STR: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     const LONG_BYTES: &[u8; 64] =
@@ -891,6 +1030,20 @@ fn test_user_force_stack_matrix() {
     );
     assert_container::<StackBytes<64>, _>(&b, false, "b_user(force_heap: false)");
     assert_eq!(&*b, LONG_BYTES);
+
+    let d = d_user!(
+        { prefer_stack: false, force_heap: false },
+        [1u32, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    );
+    assert_container::<StackU32<16>, _>(&d, false, "d_user(force_heap: false)");
+    assert_eq!(d.len(), 16);
+
+    let q = q_user!(
+        { prefer_stack: false, force_heap: false },
+        [1u64, 2, 3, 4, 5, 6, 7, 8]
+    );
+    assert_container::<StackU64<8>, _>(&q, false, "q_user(force_heap: false)");
+    assert_eq!(q.len(), 8);
 
     let f = f_user!({ prefer_stack: false, force_heap: false }, "assets/fixture.bin");
     assert_container::<StackBytes<6>, _>(&f, false, "f_user(force_heap: false)");
@@ -919,7 +1072,7 @@ fn test_user_force_stack_matrix() {
 
     // ── 2b. *_key_user! + force_heap: Some(false)（64B 长载荷）──
     let sk = s_key_user!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         { prefer_stack: false, force_heap: Some(false) },
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     );
@@ -927,15 +1080,31 @@ fn test_user_force_stack_matrix() {
     assert_eq!(&*sk, LONG_STR);
 
     let bk = b_key_user!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         { prefer_stack: false, force_heap: Some(false) },
         b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     );
     assert_container::<StackBytes<64>, _>(&bk, false, "b_key_user(Some(false))");
     assert_eq!(&*bk, LONG_BYTES);
 
+    let dk = d_key_user!(
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
+        { prefer_stack: false, force_heap: Some(false) },
+        [1u32, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    );
+    assert_container::<StackU32<16>, _>(&dk, false, "d_key_user(Some(false))");
+    assert_eq!(dk.len(), 16);
+
+    let qk = q_key_user!(
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
+        { prefer_stack: false, force_heap: Some(false) },
+        [1u64, 2, 3, 4, 5, 6, 7, 8]
+    );
+    assert_container::<StackU64<8>, _>(&qk, false, "q_key_user(Some(false))");
+    assert_eq!(qk.len(), 8);
+
     let fk = f_key_user!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         { prefer_stack: false, force_heap: Some(false) },
         "assets/fixture.bin"
     );
@@ -943,7 +1112,7 @@ fn test_user_force_stack_matrix() {
     assert_eq!(&*fk, b"secret");
 
     let csk = cs_key_user!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         { prefer_stack: false, force_heap: Some(false) },
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     );
@@ -951,7 +1120,7 @@ fn test_user_force_stack_matrix() {
     assert_eq!(csk.as_bytes(), LONG_BYTES);
 
     let wk = w_key_user!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         { prefer_stack: false, force_heap: Some(false) },
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     );
@@ -959,7 +1128,7 @@ fn test_user_force_stack_matrix() {
     assert_eq!(wk.len(), 64);
 
     let cwk = cw_key_user!(
-        { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
         { prefer_stack: false, force_heap: Some(false) },
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     );
@@ -970,7 +1139,7 @@ fn test_user_force_stack_matrix() {
 #[test]
 #[cfg(feature = "force_heap")]
 fn test_feature_force_heap_matrix() {
-    use obfstr2::{b_user, cs_user, cw_user, f_user, s_user, w_user};
+    use obfstr2::{b_user, cs_user, cw_user, d_user, f_user, q_user, s_user, w_user};
 
     // s 家族（3B 短串 + 空串）
     assert_container::<HeapStr<0>, _>(&s1!(""), true, "s1(empty)");
@@ -979,7 +1148,7 @@ fn test_feature_force_heap_matrix() {
     assert_container::<HeapStr<3>, _>(&s3!("123"), true, "s3");
     assert_container::<HeapStr<3>, _>(&s_user!({ force_heap: None }, "123"), true, "s_user(None)");
     assert_container::<HeapStr<3>, _>(
-        &s_key!({ build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() }, "123"),
+        &s_key!({ build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() }, "123"),
         true,
         "s_key",
     );
@@ -995,9 +1164,39 @@ fn test_feature_force_heap_matrix() {
         "b_user(None)",
     );
     assert_container::<HeapBytes<3>, _>(
-        &b_key!({ build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() }, b"123"),
+        &b_key!({ build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() }, b"123"),
         true,
         "b_key",
+    );
+
+    // d / q 家族（3 个定宽元素）
+    assert_container::<HeapU32<0>, _>(&d1!([]), true, "d1(empty)");
+    assert_container::<HeapU32<3>, _>(&d1!([1u32, 2, 3]), true, "d1");
+    assert_container::<HeapU32<3>, _>(&d2!([1u32, 2, 3]), true, "d2");
+    assert_container::<HeapU32<3>, _>(&d3!([1u32, 2, 3]), true, "d3");
+    assert_container::<HeapU32<3>, _>(
+        &d_user!({ force_heap: None }, [1u32, 2, 3]),
+        true,
+        "d_user(None)",
+    );
+    assert_container::<HeapU32<3>, _>(
+        &d_key!({ build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() }, [1u32, 2, 3]),
+        true,
+        "d_key",
+    );
+    assert_container::<HeapU64<0>, _>(&q1!([]), true, "q1(empty)");
+    assert_container::<HeapU64<3>, _>(&q1!([1u64, 2, 3]), true, "q1");
+    assert_container::<HeapU64<3>, _>(&q2!([1u64, 2, 3]), true, "q2");
+    assert_container::<HeapU64<3>, _>(&q3!([1u64, 2, 3]), true, "q3");
+    assert_container::<HeapU64<3>, _>(
+        &q_user!({ force_heap: None }, [1u64, 2, 3]),
+        true,
+        "q_user(None)",
+    );
+    assert_container::<HeapU64<3>, _>(
+        &q_key!({ build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() }, [1u64, 2, 3]),
+        true,
+        "q_key",
     );
 
     // f 家族（assets/fixture.bin = 6B）
@@ -1011,7 +1210,7 @@ fn test_feature_force_heap_matrix() {
     );
     assert_container::<HeapBytes<6>, _>(
         &f_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             "assets/fixture.bin"
         ),
         true,
@@ -1029,7 +1228,7 @@ fn test_feature_force_heap_matrix() {
         "cs_user(None)",
     );
     assert_container::<HeapCStr<4>, _>(
-        &cs_key!({ build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() }, c"123"),
+        &cs_key!({ build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() }, c"123"),
         true,
         "cs_key",
     );
@@ -1041,7 +1240,7 @@ fn test_feature_force_heap_matrix() {
     assert_container::<HeapU16<3>, _>(&w3!("123"), true, "w3");
     assert_container::<HeapU16<3>, _>(&w_user!({ force_heap: None }, "123"), true, "w_user(None)");
     assert_container::<HeapU16<3>, _>(
-        &w_key!({ build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() }, "123"),
+        &w_key!({ build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() }, "123"),
         true,
         "w_key",
     );
@@ -1057,7 +1256,7 @@ fn test_feature_force_heap_matrix() {
         "cw_user(None)",
     );
     assert_container::<HeapU16<4>, _>(
-        &cw_key!({ build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() }, "123"),
+        &cw_key!({ build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() }, "123"),
         true,
         "cw_key",
     );
@@ -1066,7 +1265,7 @@ fn test_feature_force_heap_matrix() {
 #[test]
 #[cfg(feature = "force_stack")]
 fn test_feature_force_stack_matrix() {
-    use obfstr2::{b_user, cs_user, cw_user, f_user, s_user, w_user};
+    use obfstr2::{b_user, cs_user, cw_user, d_user, f_user, q_user, s_user, w_user};
 
     // s 家族（64B 长载荷）
     assert_container::<StackStr<64>, _>(
@@ -1094,7 +1293,7 @@ fn test_feature_force_stack_matrix() {
     );
     assert_container::<StackStr<64>, _>(
         &s_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         ),
         false,
@@ -1127,11 +1326,63 @@ fn test_feature_force_stack_matrix() {
     );
     assert_container::<StackBytes<64>, _>(
         &b_key!(
-            { build_key: "obfstr2-test-key-0123456789abcdef", run_key: run_key() },
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
             b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         ),
         false,
         "b_key(64B)",
+    );
+
+    // d / q 家族（16 × u32 / 8 × u64 = 64B）
+    assert_container::<StackU32<16>, _>(
+        &d1!([1u32, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
+        false,
+        "d1(16u32)",
+    );
+    assert_container::<StackU32<16>, _>(
+        &d2!([1u32, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
+        false,
+        "d2(16u32)",
+    );
+    assert_container::<StackU32<16>, _>(
+        &d3!([1u32, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
+        false,
+        "d3(16u32)",
+    );
+    assert_container::<StackU32<16>, _>(
+        &d_user!(
+            { prefer_stack: false, force_heap: None },
+            [1u32, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        ),
+        false,
+        "d_user(None, 16u32)",
+    );
+    assert_container::<StackU32<16>, _>(
+        &d_key!(
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
+            [1u32, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        ),
+        false,
+        "d_key(16u32)",
+    );
+    assert_container::<StackU64<8>, _>(&q1!([1u64, 2, 3, 4, 5, 6, 7, 8]), false, "q1(8u64)");
+    assert_container::<StackU64<8>, _>(&q2!([1u64, 2, 3, 4, 5, 6, 7, 8]), false, "q2(8u64)");
+    assert_container::<StackU64<8>, _>(&q3!([1u64, 2, 3, 4, 5, 6, 7, 8]), false, "q3(8u64)");
+    assert_container::<StackU64<8>, _>(
+        &q_user!(
+            { prefer_stack: false, force_heap: None },
+            [1u64, 2, 3, 4, 5, 6, 7, 8]
+        ),
+        false,
+        "q_user(None, 8u64)",
+    );
+    assert_container::<StackU64<8>, _>(
+        &q_key!(
+            { build_key: env!("OBFSTR2_TEST_KEY", "运行 *_key! 测试前请设置环境变量 OBFSTR2_TEST_KEY"), run_key: run_key() },
+            [1u64, 2, 3, 4, 5, 6, 7, 8]
+        ),
+        false,
+        "q_key(8u64)",
     );
 
     // f 家族

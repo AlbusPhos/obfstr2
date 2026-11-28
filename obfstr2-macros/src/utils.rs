@@ -16,8 +16,26 @@ pub(crate) fn wide_to_le(units: &[u16]) -> Vec<u8> {
     bytes
 }
 
-/// 把 `bN!` 返回的字节容器还原为目标宽字符容器。
-pub(crate) fn wrap_wide(
+/// `u32` 数组按小端展开为字节流（长度恒为 `words.len() * 4`）。
+pub(crate) fn u32_to_le(words: &[u32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(words.len() * 4);
+    for w in words {
+        bytes.extend_from_slice(&w.to_le_bytes());
+    }
+    bytes
+}
+
+/// `u64` 数组按小端展开为字节流（长度恒为 `words.len() * 8`）。
+pub(crate) fn u64_to_le(words: &[u64]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(words.len() * 8);
+    for w in words {
+        bytes.extend_from_slice(&w.to_le_bytes());
+    }
+    bytes
+}
+
+/// 把 `bN!` 返回的字节容器还原为目标定宽原语容器（`StackU16` / `HeapU16` 等）。
+pub(crate) fn wrap_primitive(
     inner: TokenStream2,
     n: usize,
     main_type_path: TokenStream2,

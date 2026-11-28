@@ -165,6 +165,124 @@ macro_rules! b3 {
     };
 }
 
+/// `u32` 数组混淆宏（低延迟档）。
+///
+/// 只接受 `u32` 整数字面量数组（如 `[0xDEAD_BEEF, 1u32]`），展开为求值即得原文的
+/// `StackU32<N>` / `HeapU32<N>` 容器表达式（可解引用为 `[u32]`，`N` 为元素个数）。
+/// 具体容器类型每次编译可能变化，请使用类型推断。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::d1;
+///
+/// let words = d1!([0xDEAD_BEEF, 1u32]);
+/// assert_eq!(&*words, &[0xDEAD_BEEF, 1u32][..]);
+/// ```
+#[macro_export]
+macro_rules! d1 {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::d1!($($tt)*)
+    };
+}
+
+/// `u32` 数组混淆宏（均衡档）。
+///
+/// 输入与展开规则同 [`d1`](d1!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::d2;
+///
+/// let words = d2!([0, 1, 0xFFFF_FFFFu32]);
+/// assert_eq!(&*words, &[0, 1, 0xFFFF_FFFFu32][..]);
+/// ```
+#[macro_export]
+macro_rules! d2 {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::d2!($($tt)*)
+    };
+}
+
+/// `u32` 数组混淆宏（高强度档）。
+///
+/// 输入与展开规则同 [`d1`](d1!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::d3;
+///
+/// let words = d3!([1u32, 2, 3]);
+/// assert_eq!(&*words, &[1u32, 2, 3][..]);
+/// ```
+#[macro_export]
+macro_rules! d3 {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::d3!($($tt)*)
+    };
+}
+
+/// `u64` 数组混淆宏（低延迟档）。
+///
+/// 只接受 `u64` 整数字面量数组（如 `[0x0123_4567_89AB_CDEF, 1u64]`），展开为求值即得原文的
+/// `StackU64<N>` / `HeapU64<N>` 容器表达式（可解引用为 `[u64]`，`N` 为元素个数）。
+/// 具体容器类型每次编译可能变化，请使用类型推断。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::q1;
+///
+/// let words = q1!([0x0123_4567_89AB_CDEFu64, 1u64]);
+/// assert_eq!(&*words, &[0x0123_4567_89AB_CDEFu64, 1u64][..]);
+/// ```
+#[macro_export]
+macro_rules! q1 {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::q1!($($tt)*)
+    };
+}
+
+/// `u64` 数组混淆宏（均衡档）。
+///
+/// 输入与展开规则同 [`q1`](q1!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::q2;
+///
+/// let words = q2!([0, 1, 0xFFFF_FFFF_FFFF_FFFFu64]);
+/// assert_eq!(&*words, &[0, 1, 0xFFFF_FFFF_FFFF_FFFFu64][..]);
+/// ```
+#[macro_export]
+macro_rules! q2 {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::q2!($($tt)*)
+    };
+}
+
+/// `u64` 数组混淆宏（高强度档）。
+///
+/// 输入与展开规则同 [`q1`](q1!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::q3;
+///
+/// let words = q3!([1u64, 2, 3]);
+/// assert_eq!(&*words, &[1u64, 2, 3][..]);
+/// ```
+#[macro_export]
+macro_rules! q3 {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::q3!($($tt)*)
+    };
+}
+
 /// 文件混淆宏（低延迟档）。
 ///
 /// 接受文件路径字面量（如 `"assets/fixture.bin"`，相对于被编译 crate 的
@@ -703,6 +821,46 @@ macro_rules! b_user {
     };
 }
 
+/// `u32` 数组混淆宏（自定义档）。
+///
+/// 首参数为花括号配置块 `{ key: val, ... }`（配置键见 [`s_user`](s_user!())），
+/// 次参数为 `u32` 整数字面量数组，展开类型规则同 [`d2`](d2!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::d_user;
+///
+/// let words = d_user!({ prefer_stack: true }, [1u32, 2, 3]);
+/// assert_eq!(&*words, &[1u32, 2, 3][..]);
+/// ```
+#[macro_export]
+macro_rules! d_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::d_user!($($tt)*)
+    };
+}
+
+/// `u64` 数组混淆宏（自定义档）。
+///
+/// 首参数为花括号配置块 `{ key: val, ... }`（配置键见 [`s_user`](s_user!())），
+/// 次参数为 `u64` 整数字面量数组，展开类型规则同 [`q2`](q2!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::q_user;
+///
+/// let words = q_user!({ prefer_stack: true }, [1u64, 2, 3]);
+/// assert_eq!(&*words, &[1u64, 2, 3][..]);
+/// ```
+#[macro_export]
+macro_rules! q_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::q_user!($($tt)*)
+    };
+}
+
 /// 文件混淆宏（自定义档）。
 ///
 /// 首参数为花括号配置块 `{ key: val, ... }`（配置键见 [`s_user`](s_user!())），
@@ -914,6 +1072,48 @@ macro_rules! b_key {
     };
 }
 
+/// `u32` 数组混淆宏（动态密钥档）。
+///
+/// 语法：`d_key!({ build_key, run_key }, [0xDEAD_BEEF, 1u32])`；
+/// 密钥规则见 [`s_key`](s_key!())，展开类型规则同 [`d2`](d2!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::d_key;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let words = d_key!({ build_key: "obfstr2-demo-key", run_key: key.as_bytes() }, [1u32, 2, 3]);
+/// assert_eq!(&*words, &[1u32, 2, 3][..]);
+/// ```
+#[macro_export]
+macro_rules! d_key {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::d_key!($($tt)*)
+    };
+}
+
+/// `u64` 数组混淆宏（动态密钥档）。
+///
+/// 语法：`q_key!({ build_key, run_key }, [0x0123_4567_89AB_CDEF, 1u64])`；
+/// 密钥规则见 [`s_key`](s_key!())，展开类型规则同 [`q2`](q2!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::q_key;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let words = q_key!({ build_key: "obfstr2-demo-key", run_key: key.as_bytes() }, [1u64, 2, 3]);
+/// assert_eq!(&*words, &[1u64, 2, 3][..]);
+/// ```
+#[macro_export]
+macro_rules! q_key {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::q_key!($($tt)*)
+    };
+}
+
 /// 文件混淆宏（动态密钥档）。
 ///
 /// 语法：`f_key!({ build_key, run_key }, "path")`；路径相对于被编译 crate 的
@@ -1116,6 +1316,56 @@ macro_rules! s_key_user {
 macro_rules! b_key_user {
     ($($tt:tt)*) => {
         ::obfstr2::obfstr2_macros::b_key_user!($($tt)*)
+    };
+}
+
+/// `u32` 数组混淆宏（动态密钥 + 自定义档）。
+///
+/// 语法：`d_key_user!({ build_key, run_key }, { key: val, ... }, [1u32, 2, 3])`；
+/// 配置键见 [`s_user`](s_user!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::d_key_user;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let words = d_key_user!(
+///     { build_key: "obfstr2-demo-key", run_key: key.as_bytes() },
+///     { prefer_stack: true },
+///     [1u32, 2, 3]
+/// );
+/// assert_eq!(&*words, &[1u32, 2, 3][..]);
+/// ```
+#[macro_export]
+macro_rules! d_key_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::d_key_user!($($tt)*)
+    };
+}
+
+/// `u64` 数组混淆宏（动态密钥 + 自定义档）。
+///
+/// 语法：`q_key_user!({ build_key, run_key }, { key: val, ... }, [1u64, 2, 3])`；
+/// 配置键见 [`s_user`](s_user!())。
+///
+/// # Examples
+///
+/// ```rust
+/// use obfstr2::q_key_user;
+///
+/// let key = String::from("obfstr2-demo-key");
+/// let words = q_key_user!(
+///     { build_key: "obfstr2-demo-key", run_key: key.as_bytes() },
+///     { prefer_stack: true },
+///     [1u64, 2, 3]
+/// );
+/// assert_eq!(&*words, &[1u64, 2, 3][..]);
+/// ```
+#[macro_export]
+macro_rules! q_key_user {
+    ($($tt:tt)*) => {
+        ::obfstr2::obfstr2_macros::q_key_user!($($tt)*)
     };
 }
 

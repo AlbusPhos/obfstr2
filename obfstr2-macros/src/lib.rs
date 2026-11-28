@@ -6,7 +6,7 @@
 
 //! `obfstr2` 的内部过程宏实现 crate，无运行时，不可 doctest。
 //!
-//! 对外暴露 `s1~3!`、`b1~3!`、`f1~3!`、`i1~3!`、`fl1~3!`、`cs1~3!`、`w1~3!`、`cw1~3!`（低延迟 / 均衡 / 高强度三档）、`s_fmt!`，
+//! 对外暴露 `s1~3!`、`b1~3!`、`d1~3!`、`q1~3!`、`f1~3!`、`i1~3!`、`fl1~3!`、`cs1~3!`、`w1~3!`、`cw1~3!`（低延迟 / 均衡 / 高强度三档）、`s_fmt!`，
 //! 以及 `*_user!` 自定义档与 `*_key!` / `*_key_user!` 动态密钥档的过程宏本体。
 //!
 //! # Warning
@@ -50,6 +50,21 @@ fn expand_bytes(
 ) -> TokenStream {
     match parse::parse_bytes(input.into()) {
         Ok(bytes) => match build(bytes) {
+            Ok(ts) => ts.into(),
+            Err(e) => err_to_compile_error(proc_macro2::Span::call_site(), e),
+        },
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// `dN!` / `qN!` 共用的展开骨架：解析定宽整数字面量数组后交给档位实现。
+fn expand_words<T>(
+    input: TokenStream,
+    parse: fn(proc_macro2::TokenStream) -> syn::Result<T>,
+    build: fn(T) -> Result<proc_macro2::TokenStream, String>,
+) -> TokenStream {
+    match parse(input.into()) {
+        Ok(parsed) => match build(parsed) {
             Ok(ts) => ts.into(),
             Err(e) => err_to_compile_error(proc_macro2::Span::call_site(), e),
         },
@@ -200,6 +215,74 @@ pub fn b2(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn b3(input: TokenStream) -> TokenStream {
     expand_bytes(input, types::b3)
+}
+
+/// `u32` 数组混淆宏本体（低延迟档）：只接受 `u32` 整数字面量数组（如
+/// `[0xDEAD_BEEF, 1u32]`），展开为求值即得原文的 `StackU32<N>` / `HeapU32<N>` 容器表达式。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn d1(input: TokenStream) -> TokenStream {
+    expand_words(input, parse::parse_dwords, types::d1)
+}
+
+/// `u32` 数组混淆宏本体（均衡档）：输入与展开规则同 `d1`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn d2(input: TokenStream) -> TokenStream {
+    expand_words(input, parse::parse_dwords, types::d2)
+}
+
+/// `u32` 数组混淆宏本体（高强度档）：输入与展开规则同 `d1`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn d3(input: TokenStream) -> TokenStream {
+    expand_words(input, parse::parse_dwords, types::d3)
+}
+
+/// `u64` 数组混淆宏本体（低延迟档）：只接受 `u64` 整数字面量数组（如
+/// `[0x0123_4567_89AB_CDEF, 1u64]`），展开为求值即得原文的 `StackU64<N>` / `HeapU64<N>` 容器表达式。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn q1(input: TokenStream) -> TokenStream {
+    expand_words(input, parse::parse_qwords, types::q1)
+}
+
+/// `u64` 数组混淆宏本体（均衡档）：输入与展开规则同 `q1`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn q2(input: TokenStream) -> TokenStream {
+    expand_words(input, parse::parse_qwords, types::q2)
+}
+
+/// `u64` 数组混淆宏本体（高强度档）：输入与展开规则同 `q1`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs`。
+#[proc_macro]
+pub fn q3(input: TokenStream) -> TokenStream {
+    expand_words(input, parse::parse_qwords, types::q3)
 }
 
 /// 文件混淆宏本体（低延迟档）：接受文件路径字面量（相对于被编译 crate 的
@@ -481,6 +564,30 @@ pub fn b_user(input: TokenStream) -> TokenStream {
     expand_user(input, parse::parse_bytes_user, types::b_user)
 }
 
+/// `u32` 数组混淆宏本体（自定义档）：接受 `({ key: val, ... }, [0xDEAD_BEEF, 1u32])`，
+/// 以 `TIER_BALANCED` 为基底。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs` 与本 crate `tests/user.rs`。
+#[proc_macro]
+pub fn d_user(input: TokenStream) -> TokenStream {
+    expand_user(input, parse::parse_dwords_user, types::d_user)
+}
+
+/// `u64` 数组混淆宏本体（自定义档）：接受 `({ key: val, ... }, [0x0123_4567_89AB_CDEF, 1u64])`，
+/// 以 `TIER_BALANCED` 为基底。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+/// 用户文档与可运行示例见 `obfstr2` 根 crate，覆盖见根 crate `tests/smoke.rs` 与本 crate `tests/user.rs`。
+#[proc_macro]
+pub fn q_user(input: TokenStream) -> TokenStream {
+    expand_user(input, parse::parse_qwords_user, types::q_user)
+}
+
 /// 文件混淆宏本体（自定义档）：接受 `({ key: val, ... }, "path")`，以 `TIER_BALANCED` 为基底。
 ///
 /// # Warning
@@ -614,6 +721,26 @@ pub fn b_key(input: TokenStream) -> TokenStream {
     expand_key(input, "b_key!", parse::parse_bytes_key, types::b_key)
 }
 
+/// `u32` 数组混淆宏本体（动态密钥档）：接受 `({ build_key: ..., run_key: ... }, [0xDEAD_BEEF, 1u32])`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn d_key(input: TokenStream) -> TokenStream {
+    expand_key(input, "d_key!", parse::parse_dwords_key, types::d_key)
+}
+
+/// `u64` 数组混淆宏本体（动态密钥档）：接受 `({ build_key: ..., run_key: ... }, [0x0123_4567_89AB_CDEF, 1u64])`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn q_key(input: TokenStream) -> TokenStream {
+    expand_key(input, "q_key!", parse::parse_qwords_key, types::q_key)
+}
+
 /// 文件混淆宏本体（动态密钥档）：接受 `({ build_key: ..., run_key: ... }, "path")`。
 ///
 /// # Warning
@@ -705,6 +832,28 @@ pub fn s_key_user(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn b_key_user(input: TokenStream) -> TokenStream {
     expand_key_user(input, parse::parse_bytes_key_user, types::b_key_user)
+}
+
+/// `u32` 数组混淆宏本体（动态密钥 + 自定义档）：接受
+/// `({ build_key, run_key }, { key: val, ... }, [0xDEAD_BEEF, 1u32])`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn d_key_user(input: TokenStream) -> TokenStream {
+    expand_key_user(input, parse::parse_dwords_key_user, types::d_key_user)
+}
+
+/// `u64` 数组混淆宏本体（动态密钥 + 自定义档）：接受
+/// `({ build_key, run_key }, { key: val, ... }, [0x0123_4567_89AB_CDEF, 1u64])`。
+///
+/// # Warning
+///
+/// 内部实现，外部请使用 `obfstr2` 根 crate 的同名宏；宏本体与展开形态可随版本变更，不做稳定性承诺。
+#[proc_macro]
+pub fn q_key_user(input: TokenStream) -> TokenStream {
+    expand_key_user(input, parse::parse_qwords_key_user, types::q_key_user)
 }
 
 /// 文件混淆宏本体（动态密钥 + 自定义档）：接受 `({ build_key, run_key }, { key: val, ... }, "path")`。

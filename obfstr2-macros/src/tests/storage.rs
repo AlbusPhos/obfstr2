@@ -1,6 +1,6 @@
 use crate::storage::STORAGES;
 use crate::tests::obfstr2_dep;
-use lib_unknown::dyntest::DnyRun;
+use lib_unknown::compiletest::Runner;
 use lib_unknown::rand::core::{fill_bytes, shuffle};
 use quote::{format_ident, quote};
 use std::fs;
@@ -25,7 +25,7 @@ struct StorageAggregatedStat {
 #[ignore = "需5到10分钟的STORAGES多维度压测与latency校准"]
 #[allow(clippy::needless_range_loop)]
 fn test_storages_latency() {
-    let mut runner = DnyRun::new("fn main() {}", &obfstr2_dep(true));
+    let mut runner = Runner::new("fn main() {}", &obfstr2_dep(true));
     runner.release(true);
     let ret = runner.build(Some(Duration::from_secs(15)));
     if !ret.ok {

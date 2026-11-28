@@ -503,6 +503,89 @@ pub(crate) fn parse_bytes(input: TokenStream2) -> syn::Result<Vec<u8>> {
     }
 }
 
+/// 解析后的 `dN!` 载荷：`u32` 整数字面量数组。
+pub(crate) struct ParsedDWords {
+    pub(crate) words: Vec<u32>,
+}
+
+/// 解析后的 `qN!` 载荷：`u64` 整数字面量数组。
+pub(crate) struct ParsedQWords {
+    pub(crate) words: Vec<u64>,
+}
+
+/// `dN!` / `qN!` 数组元素的公共解析：只接受整数字面量，按目标类型做范围校验。
+///
+/// 允许空后缀与任意整数后缀（值须落在目标类型范围内），拒绝浮点后缀、
+/// 负数与表达式；`macro_name` 仅用于错误文案。
+macro_rules! parse_word_array_lit {
+    ($arr:expr, $ty:ty, $macro_name:literal) => {{
+        let mut words = Vec::with_capacity($arr.elems.len());
+        for elem in &$arr.elems {
+            match unwrap_group_ref(elem) {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Int(n),
+                    ..
+                }) => {
+                    if IntTy::from_suffix(n.suffix()).is_none() {
+                        return Err(syn::Error::new_spanned(
+                            n,
+                            format!(
+                                "{} 数组元素只接受整数字面量，不支持后缀 {:?}",
+                                $macro_name,
+                                n.suffix()
+                            ),
+                        ));
+                    }
+                    match n.base10_parse::<$ty>() {
+                        Ok(v) => words.push(v),
+                        Err(_) => {
+                            return Err(syn::Error::new_spanned(
+                                n,
+                                format!("{} 数组元素超出 {} 范围", $macro_name, stringify!($ty)),
+                            ));
+                        }
+                    }
+                }
+                other => {
+                    return Err(syn::Error::new_spanned(
+                        other,
+                        format!("{} 数组元素只接受整数字面量", $macro_name),
+                    ));
+                }
+            }
+        }
+        words
+    }};
+}
+
+/// 解析 `dN!` 输入：只接受 `[1, 0xDEAD_BEEF, ...]` 形式的 `u32` 整数字面量数组。
+pub(crate) fn parse_dwords(input: TokenStream2) -> syn::Result<ParsedDWords> {
+    let expr: syn::Expr = syn::parse2(input)?;
+    match unwrap_group(expr) {
+        syn::Expr::Array(arr) => Ok(ParsedDWords {
+            words: parse_word_array_lit!(arr, u32, "dN!"),
+        }),
+        other => Err(syn::Error::new_spanned(
+            &other,
+            "dN! 只接受 u32 整数字面量数组（如 [0xDEAD_BEEF, 1u32]），不支持表达式",
+        )),
+    }
+}
+
+/// 解析 `qN!` 输入：只接受 `[1, 0x0123_4567_89AB_CDEF, ...]` 形式的 `u64` 整数字面量数组。
+pub(crate) fn parse_qwords(input: TokenStream2) -> syn::Result<ParsedQWords> {
+    let expr: syn::Expr = syn::parse2(input)?;
+    match unwrap_group(expr) {
+        syn::Expr::Array(arr) => Ok(ParsedQWords {
+            words: parse_word_array_lit!(arr, u64, "qN!"),
+        }),
+        other => Err(syn::Error::new_spanned(
+            &other,
+            "qN! 只接受 u64 整数字面量数组（如 [0x0123_4567_89AB_CDEF, 1u64]），不支持表达式",
+        )),
+    }
+}
+
 /// 解析 `fN!` 输入：路径字面量相对被编译 crate 的 `CARGO_MANIFEST_DIR` 读入文件
 /// （与 `include_bytes!` 一致）；文件缺失或不可读时报错。
 pub(crate) fn parse_file(input: TokenStream2) -> syn::Result<Vec<u8>> {
@@ -1274,6 +1357,8 @@ macro_rules! def_combined_parsers {
 def_combined_parsers! {
     (parse_str_user,   "s_user!",  parse_str_key,   parse_str_key_user,   "s_key_user!",  parse_str   -> String),
     (parse_bytes_user, "b_user!",  parse_bytes_key, parse_bytes_key_user, "b_key_user!",  parse_bytes -> Vec<u8>),
+    (parse_dwords_user, "d_user!", parse_dwords_key, parse_dwords_key_user, "d_key_user!", parse_dwords -> ParsedDWords),
+    (parse_qwords_user, "q_user!", parse_qwords_key, parse_qwords_key_user, "q_key_user!", parse_qwords -> ParsedQWords),
     (parse_file_user,  "f_user!",  parse_file_key,  parse_file_key_user,  "f_key_user!",  parse_file  -> Vec<u8>),
     (parse_int_user,   "i_user!",  parse_int_key,   parse_int_key_user,   "i_key_user!",  parse_int   -> ParsedInt),
     (parse_float_user, "fl_user!", parse_float_key, parse_float_key_user, "fl_key_user!", parse_float -> ParsedFloat),

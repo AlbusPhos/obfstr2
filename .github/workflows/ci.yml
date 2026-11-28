@@ -11,6 +11,8 @@ concurrency:
   cancel-in-progress: true
 env:
   CARGO_TERM_COLOR: always
+  # 动态密钥档测试的 build_key（编译期）与 run_key（运行期）读取源，两处必须一致。
+  OBFSTR2_TEST_KEY: obfstr2-ci-test-key-0123456789abcdef
 jobs:
   check:
     name: fmt + clippy + test + doc

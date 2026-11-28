@@ -7,10 +7,13 @@
 //! 裸机链路测试：`x86_64-unknown-none` 下解密并 `write(1)` 输出。
 //!
 //! 按 `default-features` 拆分为两个 `#[test]` 批次入口，
-//! 各自通过 `dny_run_batch_use_cache` 预热并复用编译缓存。
+//! 各自通过 `run_batch_use_cache` 预热并复用编译缓存。
+//!
+//! 运行含 `*_key!` 的批次前需设置 `OBFSTR2_TEST_KEY`；裸机目标无运行时环境变量
+//! 接口，`run_key` 由测试宿主读取后以函数返回值形式注入生成源码。
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-use lib_unknown::dyntest::{DnyTask, dny_run_batch_use_cache};
+use lib_unknown::compiletest::{Task, run_batch_use_cache};
 use std::time::Duration;
 
 const NOSTD_CARGO_CONFIG: &str = r#"
@@ -176,6 +179,11 @@ fn body_u32_le(expr: &str) -> String {
     format!("let v: u32 = {expr};\n    sys_write(1, &v.to_le_bytes());")
 }
 
+/// 定宽数组容器：直接输出底层小端字节流（无 alloc）。
+fn body_word_bytes(expr: &str) -> String {
+    format!("let words = {expr};\n    sys_write(1, words.as_byte_slice());")
+}
+
 /// 对应原 `run_nostd_float`：`f32` 小端位字节转 8 字节 hex ASCII 输出（避免非 UTF-8 被 lossy 改写）
 fn body_f32_hex(expr: &str) -> String {
     format!(
@@ -197,12 +205,12 @@ fn body_f32_hex(expr: &str) -> String {
 fn run_nostd_batch(deps: &str, cases: &[(&str, String, Vec<u8>)]) {
     let tasks = cases.iter().map(|(tag, main_body, _)| {
         let code = NOSTD_TEMPLATE.replace("[[main_body]]", main_body);
-        DnyTask::new(*tag, code)
+        Task::new(*tag, code)
             .with_deps(deps)
             .with_cargo_config(NOSTD_CARGO_CONFIG)
     });
 
-    let results = dny_run_batch_use_cache(tasks, Some(Duration::from_secs(180)), None, None);
+    let results = run_batch_use_cache(tasks, Some(Duration::from_secs(180)), None, None);
     assert_eq!(results[0].0, "init_cache");
 
     for ((expected_tag, _, expected_bytes), (actual_tag, ret)) in
@@ -236,6 +244,14 @@ fn nostd_no_alloc_batch() {
         .to_le_bytes()
         .iter()
         .flat_map(|b| format!("{b:02x}").into_bytes())
+        .collect();
+    let expected_dwords: Vec<u8> = [0x61616161u32, 0x62626262, 0]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
+    let expected_qwords: Vec<u8> = [0x0102_0304_0506_0708u64, 0]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
         .collect();
 
     let cases = vec![
@@ -295,6 +311,18 @@ fn nostd_no_alloc_batch() {
             body_f32_hex("obfstr2::fl1!(1.5f32)"),
             expected_fl1_hex,
         ),
+        // 9. d1: u32 数组小端字节流
+        (
+            "d1_nostd",
+            body_word_bytes("obfstr2::d1!([0x61616161u32, 0x62626262, 0])"),
+            expected_dwords,
+        ),
+        // 10. q1: u64 数组小端字节流
+        (
+            "q1_nostd",
+            body_word_bytes("obfstr2::q1!([0x0102_0304_0506_0708u64, 0])"),
+            expected_qwords,
+        ),
     ];
 
     run_nostd_batch(&obfstr2_dep(true), &cases);
@@ -305,12 +333,30 @@ fn nostd_default_features_batch() {
     let lit = "a".repeat(128);
     let expected_a128 = vec![b'a'; 128];
 
+    // 裸机目标没有可读取环境变量的运行时接口：
+    // - `build_key` 仍由临时工程编译期的 `env!` 从 OBFSTR2_TEST_KEY 读取；
+    // - `run_key` 由测试宿主在运行期读取同名环境变量后，以函数返回值形式注入生成源码，
+    //   用于验证“运行期密钥来源”链路，而不是把密钥直接写进宏调用参数。
+    // 运行本测试前必须设置 OBFSTR2_TEST_KEY，且两次读写必须一致。
+    let env_key = std::env::var("OBFSTR2_TEST_KEY")
+        .expect("运行 *_key! 测试前请设置环境变量 `OBFSTR2_TEST_KEY`");
+    let env_key_bytes = format!("{:?}", env_key.as_bytes());
+
     let mut expected_w128 = Vec::with_capacity(256);
     for u in lit.encode_utf16() {
         expected_w128.extend_from_slice(&u.to_le_bytes());
     }
     let mut expected_cw128 = expected_w128.clone();
     expected_cw128.extend_from_slice(&[0, 0]);
+
+    let expected_dwords: Vec<u8> = [0x61616161u32, 0x62626262, 0]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
+    let expected_qwords: Vec<u8> = [0x0102_0304_0506_0708u64, 0]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
 
     let cases = vec![
         // 1. b2: 默认特性下可能随机展开为 HeapBytes
@@ -343,13 +389,27 @@ fn nostd_default_features_batch() {
             )),
             expected_w128,
         ),
-        // 5. s_key: 动态密钥（build_key 字节串 + 运行期局部 key），默认特性（含堆）
+        // 5. s_key: 动态密钥（编译期 env! build_key + 运行期来源 run_key），默认特性（含堆）
         (
             "s_key_nostd",
             body_deref_bytes(&format!(
-                r#"{{ let key: &[u8] = b"{lit}"; let s = obfstr2::s_key!({{ build_key: b"{lit}", run_key: key }}, "{lit}"); obfstr2::types::str::Str::as_str(&s).as_bytes().to_vec() }}"#
+                r#"{{ fn runtime_key() -> &'static [u8] {{ &{env_key_bytes} }}
+                let s = obfstr2::s_key!({{ build_key: env!("OBFSTR2_TEST_KEY"), run_key: runtime_key() }}, "{lit}");
+                obfstr2::types::str::Str::as_str(&s).as_bytes().to_vec() }}"#
             )),
             expected_a128,
+        ),
+        // 6. d2: 默认特性下可能随机展开为 HeapU32
+        (
+            "d2_nostd",
+            body_word_bytes("obfstr2::d2!([0x61616161u32, 0x62626262, 0])"),
+            expected_dwords,
+        ),
+        // 7. q2: 默认特性下可能随机展开为 HeapU64
+        (
+            "q2_nostd",
+            body_word_bytes("obfstr2::q2!([0x0102_0304_0506_0708u64, 0])"),
+            expected_qwords,
         ),
     ];
 

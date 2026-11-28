@@ -6,7 +6,7 @@
 
 //! 性能对比测试：全尺度 Payload 覆盖 (8B ~ 10MB) + 单次缓存构建耗时 + 每次去混淆耗时 + 产物体积 + expand 字符数。
 
-use lib_unknown::dyntest::DnyRun;
+use lib_unknown::compiletest::Runner;
 use std::time::Duration;
 
 /// 压测覆盖的数据尺寸阶梯：8B, 32B, 256B, 1KB, 256KB, 1MB, 10MB
@@ -105,7 +105,7 @@ struct Sample {
     bin_bytes: Option<u64>,
 }
 
-fn measure_single(runner: &mut DnyRun, name: &str, expected_sum: u64) -> Sample {
+fn measure_single(runner: &mut Runner, name: &str, expected_sum: u64) -> Sample {
     let ret = runner.run(timeout());
     assert!(ret.ok, "[{name}] 缓存构建或运行失败:\n{ret}");
 
@@ -251,7 +251,7 @@ fn perf_report_release() {
     let combined_deps = format!("{}\n{}", casual_dep(), obfstr2_dep());
 
     eprintln!("\n>>> 正在进行全局依赖预热构建 (Warm-up)...");
-    let mut runner = DnyRun::new("fn main() {}", &combined_deps);
+    let mut runner = Runner::new("fn main() {}", &combined_deps);
     runner.release(true);
     let warm = runner.build(timeout());
     assert!(warm.ok, "依赖预热构建失败:\n{warm}");

@@ -13,7 +13,7 @@
 
 A drop-in, one-line macro framework for compile-time polymorphic security obfuscation in Rust. Literal in, secure expression out—all encryption and control-flow mutations are performed at compile time. Every build generates completely distinct binary signatures and ciphertext forms, thoroughly defeating static signature scanning, Mandiant `FLOSS`, and specialized Rust deobfuscators (such as [`rust-deobf`](https://github.com/VAHPEM/rust-deobf)).
 
-Comprehensive coverage for **strings, C strings, UTF-16 wide strings, byte arrays, external files, integers, floats, and formatted strings**. Supports direct dereferencing to raw values or storing in managed containers; all containers automatically execute volatile memory zeroing upon leaving scope (`Drop`) to prevent sensitive plaintext from lingering on the stack or heap.
+Comprehensive coverage for **strings, C strings, UTF-16 wide strings, byte arrays, u32 / u64 fixed-width arrays, external files, integers, floats, and formatted strings**. Supports direct dereferencing to raw values or storing in managed containers; all containers automatically execute volatile memory zeroing upon leaving scope (`Drop`) to prevent sensitive plaintext from lingering on the stack or heap.
 
 ## Table of Contents
 
@@ -31,7 +31,7 @@ Comprehensive coverage for **strings, C strings, UTF-16 wide strings, byte array
 
 ```toml
 [dependencies]
-obfstr2 = "0.5"
+obfstr2 = "0.6"
 ```
 
 All obfuscation macros use numeric suffixes to distinguish strength tiers: `1` (low latency), `2` (recommended balanced), and `3` (high-strength anti-RE); custom [`*_user!`](#custom-strength-tier-_user) and dynamic-key [`*_key!`](#dynamic-key-tier-_key) variants are also available.
@@ -156,6 +156,8 @@ All macros provide three preset tiers: `1` (low latency), `2` (balanced), and `3
 |:----------------------|:------------------------------------------------------------|:----------------------------------------------------------|:---------------------------------------------------------------------------------------------------------------------|
 | `s1!` ~ `s3!`         | `"hello"`                                                   | `StackStr<N>` / `HeapStr<N>` (`Deref<Target = str>`)      | UTF-8 string container.                                                                                              |
 | `b1!` ~ `b3!`         | `b"abc"` or `[0x41, 66]`                                    | `StackBytes<N>` / `HeapBytes<N>` (`Deref<Target = [u8]>`) | Array elements must be in `0..=255`.                                                                                 |
+| `d1!` ~ `d3!`         | `[0xDEAD_BEEF, 1u32]`                                       | `StackU32<N>` / `HeapU32<N>` (`Deref<Target = [u32]>`)    | `u32` integer literal array; restored as little-endian, `N` is the element count.                                    |
+| `q1!` ~ `q3!`         | `[0x0123_4567_89AB_CDEF, 1u64]`                             | `StackU64<N>` / `HeapU64<N>` (`Deref<Target = [u64]>`)    | `u64` integer literal array; restored as little-endian, `N` is the element count.                                    |
 | `cs1!` ~ `cs3!`       | `c"..."` / `"..."` / `b"..."`                               | `StackCStr<N>` / `HeapCStr<N>` (`Deref<Target = CStr>`)   | Automatically appends trailing `\0`, zero-copy runtime recovery; use `b"..."` for non-UTF-8; **no interior NULs**.   |
 | `w1!` ~ `w3!`         | `"a\0b"`                                                    | `StackU16<N>` / `HeapU16<N>` (`Deref<Target = [u16]>`)    | Compile-time UTF-16 conversion; **no** trailing NUL appended, interior NULs **allowed** (for length-prefixed APIs).  |
 | `cw1!` ~ `cw3!`       | `"kernel32.dll"`                                            | `StackU16<N>` / `HeapU16<N>` (`Deref<Target = [u16]>`)    | Compile-time UTF-16 conversion with **automatic trailing `0u16`**; **no interior NULs**; `as_ptr()` fits `PCWSTR`.   |
@@ -215,14 +217,14 @@ fn main() {
 
 Decouples the compile-time encryption key from the runtime decryption key so the complete key is never stored in the binary artifact:
 
-```rust
+```rust ,no_run
 use obfstr2::s_key;
 
-fn get_server_key() -> &'static [u8] { "obfstr2-demo-key".as_bytes() }
-
 fn main() {
+    // Retrieve the decryption key from a server or an environment variable.
+    let key = std::env::var("OBFSTR2_TEST_KEY").expect("set OBFSTR2_TEST_KEY");
     let s = s_key!(
-        { build_key: "obfstr2-demo-key", run_key: get_server_key() },
+        { build_key: env!("OBFSTR2_TEST_KEY"), run_key: key.as_bytes() },
         "hello",
     );
     assert_eq!(&*s, "hello");
@@ -271,7 +273,8 @@ fn main() {
 | `force_stack`             |   ❌    | Forces the main container of all container macros onto the stack (compile error if exceeding `STACK_BUDGET`); mutually exclusive with `force_heap`. |
 | `budget-1k` ~ `budget-8m` |   ❌    | Stack budget cap: choose from `1k`, `4k` (default), `16k`, `64k`, `256k`, `512k`, `1m`, `4m`, `8m` (highest wins if multiple).                      |
 
-> **Pure-stack bare-metal mode (no `alloc`, no anti-disassembly):** `obfstr2 = { version = "0.5", default-features = false }`  
+> **Pure-stack bare-metal mode (no `alloc`, no anti-disassembly):** `obfstr2 = { version = "0.6", default-features = false }`
+>
 > *Note: `force_heap` and `force_stack` are mutually exclusive; do not pass `--all-features` directly when running tests (see [Contributing & Development Verification](#contributing--development-verification)).*
 
 ---
@@ -349,6 +352,10 @@ Issues and Pull Requests are welcome! Adding a new obfuscation primitive or stor
 
 **Standard Test & Calibration Suite:**
 ```bash
+# Dynamic-key tests require OBFSTR2_TEST_KEY: build_key reads it at compile time,
+# run_key reads it at runtime; both values must match.
+export OBFSTR2_TEST_KEY='obfstr2-test-key-0123456789abcdef'
+
 # Core functionality, compile-time rejection, and bare-metal no_std verification (requires x86_64-unknown-none target)
 cargo test --test smoke --test s_fmt --test compile_fail --test nostd
 cd obfstr2-macros && cargo test --lib
@@ -367,6 +374,9 @@ cargo test --test rust_deobf -- main --ignored --nocapture
 
 **Pre-Submission Linting & Formatting Checks:**
 ```bash
+# clippy --all-targets compiles the dynamic-key tests that use env!, so set the variable.
+export OBFSTR2_TEST_KEY='obfstr2-test-key-0123456789abcdef'
+
 cargo fmt --all -- --check
 cd obfstr2-macros && cargo fmt --all -- --check
 cargo clippy --all-targets --features alloc,anti-disassembly -- -D warnings

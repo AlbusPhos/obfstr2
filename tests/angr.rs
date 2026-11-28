@@ -4,7 +4,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #![cfg(unix)]
-use lib_unknown::dyntest::DnyRun;
+use lib_unknown::compiletest::Runner;
 use std::env;
 use std::error::Error;
 use std::io::Read;
@@ -287,7 +287,7 @@ obfstr = \"0.4\"
 ",
         env!("CARGO_MANIFEST_DIR")
     );
-    let mut runner = DnyRun::new(&TEMPLATE.replace("[[obfstr]]", "obfstr::obfstr"), &deps);
+    let mut runner = Runner::new(&TEMPLATE.replace("[[obfstr]]", "obfstr::obfstr"), &deps);
     runner.release(true);
     runner.cargo_config(
         r#"

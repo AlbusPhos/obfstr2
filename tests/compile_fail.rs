@@ -6,9 +6,9 @@
 
 //! 非法输入测试：越界元素 / 缺失文件 / 非字面量 / 未闭合括号均报编译错误。
 //!
-//! 使用 `dny_run_batch_use_cache` 预热一次 `obfstr2` 依赖并复用编译缓存。
+//! 使用 `run_batch_use_cache` 预热一次 `obfstr2` 依赖并复用编译缓存。
 
-use lib_unknown::dyntest::{DnyTask, dny_run_batch_use_cache};
+use lib_unknown::compiletest::{Task, run_batch_use_cache};
 
 fn obfstr2_dep() -> String {
     format!("obfstr2 = {{ path = {:?} }}", env!("CARGO_MANIFEST_DIR"))
@@ -20,6 +20,36 @@ const COMPILE_FAIL_CASES: &[(&str, &str, &str)] = &[
         "b2-range",
         "0..=255",
         r#"fn main() { let _b = obfstr2::b2!([0x61, 300]); }"#,
+    ),
+    (
+        "d2-non-array",
+        "只接受 u32 整数字面量数组",
+        r#"fn main() { let x = [1u32, 2]; let _d = obfstr2::d2!(x); }"#,
+    ),
+    (
+        "d2-neg",
+        "数组元素只接受整数字面量",
+        r#"fn main() { let _d = obfstr2::d2!([-1]); }"#,
+    ),
+    (
+        "d2-range",
+        "超出 u32 范围",
+        r#"fn main() { let _d = obfstr2::d2!([4294967296u64]); }"#,
+    ),
+    (
+        "d2-float",
+        "数组元素只接受整数字面量",
+        r#"fn main() { let _d = obfstr2::d2!([1.0f32]); }"#,
+    ),
+    (
+        "q2-neg",
+        "数组元素只接受整数字面量",
+        r#"fn main() { let _q = obfstr2::q2!([-1]); }"#,
+    ),
+    (
+        "q2-range",
+        "超出 u64 范围",
+        r#"fn main() { let _q = obfstr2::q2!([18446744073709551616u128]); }"#,
     ),
     (
         "s-user-unknown",
@@ -157,6 +187,9 @@ const COMPILE_FAIL_CASES: &[(&str, &str, &str)] = &[
         r#"fn main() { print!("{}", obfstr2::s_fmt1!("a{b")) }"#,
     ),
     // ── 动态密钥档：密钥配置校验 ──────────────────────────────────────────
+    // 以下用例故意使用硬编码密钥 / 编译期字面量，用于验证编译期拒绝逻辑，
+    // 不属于正常 *_key! 使用方式；运行期 roundtrip 见 tests/smoke.rs（统一读取
+    // OBFSTR2_TEST_KEY 环境变量）。
     (
         "s-key-run-lit",
         "不能为字面量",
@@ -229,10 +262,10 @@ fn all_invalid_inputs_rejected() {
     let dep = obfstr2_dep();
     let tasks = COMPILE_FAIL_CASES
         .iter()
-        .map(|&(tag, _, code)| DnyTask::new(tag, code).with_deps(&dep).with_release(false));
+        .map(|&(tag, _, code)| Task::new(tag, code).with_deps(&dep).with_release(false));
 
     // only_build = Some(true)：仅编译不运行；启用首任务依赖预热缓存
-    let results = dny_run_batch_use_cache(tasks, None, Some(true), None);
+    let results = run_batch_use_cache(tasks, None, Some(true), None);
 
     // 1. 校验首任务依赖缓存预热是否成功
     let (init_tag, init_ret) = &results[0];

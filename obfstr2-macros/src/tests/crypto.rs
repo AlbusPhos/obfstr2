@@ -8,7 +8,7 @@
 use crate::crypto::{CRYPTOS, LayerCtx};
 use crate::storage::STORAGES;
 use crate::tests::obfstr2_dep;
-use lib_unknown::dyntest::DnyRun;
+use lib_unknown::compiletest::Runner;
 use lib_unknown::rand::core::{fill_bytes, random, shuffle};
 use quote::{format_ident, quote};
 use std::env;
@@ -91,7 +91,7 @@ struct AggregatedStat {
 #[ignore = "5到10分钟的CRYPTOS验证和latency矫正"]
 #[allow(clippy::needless_range_loop)]
 fn test_cryptos_latency() {
-    let mut runner = DnyRun::new("fn main() {}", &obfstr2_dep(false));
+    let mut runner = Runner::new("fn main() {}", &obfstr2_dep(false));
     runner.release(true);
     let ret = runner.build(Some(Duration::from_secs(10)));
     if !ret.ok {
@@ -741,7 +741,7 @@ fn test_cryptos_security() {
     // 最终整体缩放系数，预留编排层多原语叠加空间
     const COEFFICIENT: f64 = 0.60;
 
-    let mut runner = DnyRun::new(
+    let mut runner = Runner::new(
         &ANGR_RUST_TEMPLATE
             .replace("[[len]]", "1")
             .replace("[[storage]]", "let d = [0u8; 1];")
