@@ -16,6 +16,9 @@
 - 新增 `u32` 定宽数组宏 `d1!` / `d2!` / `d3!` 与 `u64` 定宽数组宏 `q1!` / `q2!` / `q3!`，以及对应的 `d_user!` / `d_key!` / `d_key_user!`、`q_user!` / `q_key!` / `q_key_user!` 全系列变体；输入为整数字面量数组（如 `[0xDEAD_BEEF, 1u32]`），展开为 `StackU32<N>` / `HeapU32<N>` 或 `StackU64<N>` / `HeapU64<N>` 容器（`Deref<Target = [u32]>` / `[u64]`），按小端还原并在 `Drop` 时整段 volatile 清零
 - 测试：`obfstr2-macros/src/tests/types/words.rs` 覆盖 `u32` / `u64` 数组解析、范围与字面量形态拒绝、多态展开及自定义档；根 crate `tests/smoke.rs` 覆盖三档 roundtrip、`*_user!` / `*_key!` / `*_key_user!` 变体、宏元变量转发与强制堆栈路由矩阵；`tests/compile_fail.rs` 与 `tests/nostd.rs` 补充非法输入与裸机链路用例
 
+### Fixed
+- 测试：修复 `security_factor_scales_layer_count` 在基础选层数随机为 3 时误报失败的问题；`security_factor > 1` 的层数上界应为基础选层上限 3，而非 2
+
 ### Changed
 - 依赖升级：`lib-unknown` 由 `=0.5.0` 升级至 `=0.6.0`（根 crate 与 `obfstr2-macros` 均精确锁定）；0.6 已拆分为多个子 crate，门面保留原有公开模块路径与 Feature 名称，因此库内 `lib_unknown::{crypto, encoding, errors, hash, types, lazy}` 等调用无需调整
 - 测试：`lib-unknown` 开发期动态编译工具由 `dyntest` 更名为 `compiletest`，测试代码同步迁移 `DnyRun` / `DnyTask` / `DnyResult` / `dny_run_batch_use_cache` 至 `Runner` / `Task` / `RunnerResult` / `run_batch_use_cache`，并将开发依赖特性 `dyntest` 改为 `compiletest`

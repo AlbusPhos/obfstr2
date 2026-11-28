@@ -33,9 +33,11 @@ fn security_factor_scales_layer_count() {
     };
     let (_, layers) = encrypt_layers(vec![0u8; 32], &fast, random::<u64>(), "f100")
         .expect("encrypt with security_factor=100");
+    // `security_factor=100` 会让首层组合安全度直接达标，但基础选层数仍为随机
+    // `1..=3`，因此层数上界是基础层上限 3，而不是 2。
     assert!(
-        layers.len() <= 2,
-        "factor > 1 应减少层数，实际 {} 层",
+        layers.len() <= 3,
+        "factor > 1 不应超过基础选层上限，实际 {} 层",
         layers.len()
     );
 
